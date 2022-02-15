@@ -99,14 +99,16 @@ type BootstrapConfig interface {
 type StopBefore int
 
 const (
-	DoEverything                  StopBefore = 0
-	StopBeforePrepareBuildActions StopBefore = 1
-	StopBeforeWriteNinja          StopBefore = 2
+	DoEverything StopBefore = iota
+	StopBeforePrepareBuildActions
+	StopBeforeWriteNinja
 )
 
 type PrimaryBuilderInvocation struct {
 	Inputs      []string
 	Outputs     []string
 	Args        []string
+	Console     bool
 	Description string
+	Env         map[string]string
 }
