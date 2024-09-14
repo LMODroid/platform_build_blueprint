@@ -1,5 +1,9 @@
 package {
     default_applicable_licenses: ["build_blueprint_license"],
+    default_visibility: [
+        "//build/blueprint:__subpackages__",
+        "//build/soong:__subpackages__",
+    ],
 }
 
 // Added automatically by a large-scale-change that took the approach of
@@ -68,6 +72,10 @@ bootstrap_go_package {
         "transition_test.go",
         "visit_test.go",
     ],
+    visibility: [
+        // used by plugins
+        "//visibility:public",
+    ],
 }
 
 bootstrap_go_package {
@@ -86,12 +94,24 @@ bootstrap_go_package {
         "parser/printer_test.go",
         "parser/sort_test.go",
     ],
+    visibility: [
+        "//build/blueprint:__subpackages__",
+        "//build/soong:__subpackages__",
+        "//development/vndk/tools/elfcheck",
+        "//tools/security/fuzzing/fuzzer_parser",
+        "//vendor:__subpackages__",
+    ],
 }
 
 bootstrap_go_package {
     name: "blueprint-deptools",
     pkgPath: "github.com/google/blueprint/deptools",
     srcs: ["deptools/depfile.go"],
+    visibility: [
+        "//build/blueprint:__subpackages__",
+        "//build/make/tools/compliance",
+        "//build/soong:__subpackages__",
+    ],
 }
 
 bootstrap_go_package {
@@ -109,6 +129,10 @@ bootstrap_go_package {
         "pathtools/fs_test.go",
         "pathtools/glob_test.go",
         "pathtools/lists_test.go",
+    ],
+    visibility: [
+        // used by plugins
+        "//visibility:public",
     ],
 }
 
@@ -143,6 +167,10 @@ bootstrap_go_package {
         "proptools/typeequal_test.go",
         "proptools/unpack_test.go",
     ],
+    visibility: [
+        // used by plugins
+        "//visibility:public",
+    ],
 }
 
 bootstrap_go_package {
@@ -166,7 +194,6 @@ bootstrap_go_package {
         "bootstrap/bootstrap.go",
         "bootstrap/command.go",
         "bootstrap/config.go",
-        "bootstrap/glob.go",
         "bootstrap/writedocs.go",
     ],
 }
@@ -191,15 +218,12 @@ bootstrap_go_package {
 }
 
 blueprint_go_binary {
-    name: "bpglob",
-    deps: ["blueprint-pathtools"],
-    srcs: ["bootstrap/bpglob/bpglob.go"],
-}
-
-blueprint_go_binary {
     name: "bpfmt",
     deps: ["blueprint-parser"],
     srcs: ["bpfmt/bpfmt.go"],
+    visibility: [
+        "//tools/external_updater",
+    ],
 }
 
 blueprint_go_binary {

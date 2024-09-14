@@ -21,6 +21,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -45,6 +46,15 @@ type GlobResult struct {
 // FileList returns the list of files matched by a glob for writing to an output file.
 func (result GlobResult) FileList() []byte {
 	return []byte(strings.Join(result.Matches, "\n") + "\n")
+}
+
+func (result GlobResult) Clone() GlobResult {
+	return GlobResult{
+		Pattern:  result.Pattern,
+		Excludes: slices.Clone(result.Excludes),
+		Matches:  slices.Clone(result.Matches),
+		Deps:     slices.Clone(result.Deps),
+	}
 }
 
 // MultipleGlobResults is a list of GlobResult structs.

@@ -19,14 +19,17 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"text/scanner"
 	"time"
 
 	"github.com/google/blueprint/parser"
+	"github.com/google/blueprint/proptools"
 )
 
 type Walker interface {
@@ -61,33 +64,53 @@ type depsProvider interface {
 	IgnoreDeps() []string
 }
 
-type fooModule struct {
+type IncrementalTestProvider struct {
+	Value string
+}
+
+var IncrementalTestProviderKey = NewProvider[IncrementalTestProvider]()
+
+type baseTestModule struct {
 	SimpleName
 	properties struct {
 		Deps         []string
 		Ignored_deps []string
-		Foo          string
 	}
+	GenerateBuildActionsCalled bool
+}
+
+func (b *baseTestModule) Deps() []string {
+	return b.properties.Deps
+}
+
+func (b *baseTestModule) IgnoreDeps() []string {
+	return b.properties.Ignored_deps
+}
+
+var pctx PackageContext
+
+func init() {
+	pctx = NewPackageContext("android/blueprint")
+}
+func (b *baseTestModule) GenerateBuildActions(ctx ModuleContext) {
+	b.GenerateBuildActionsCalled = true
+	outputFile := ctx.ModuleName() + "_phony_output"
+	ctx.Build(pctx, BuildParams{
+		Rule:    Phony,
+		Outputs: []string{outputFile},
+	})
+	SetProvider(ctx, IncrementalTestProviderKey, IncrementalTestProvider{
+		Value: ctx.ModuleName(),
+	})
+}
+
+type fooModule struct {
+	baseTestModule
 }
 
 func newFooModule() (Module, []interface{}) {
 	m := &fooModule{}
-	return m, []interface{}{&m.properties, &m.SimpleName.Properties}
-}
-
-func (f *fooModule) GenerateBuildActions(ModuleContext) {
-}
-
-func (f *fooModule) Deps() []string {
-	return f.properties.Deps
-}
-
-func (f *fooModule) IgnoreDeps() []string {
-	return f.properties.Ignored_deps
-}
-
-func (f *fooModule) Foo() string {
-	return f.properties.Foo
+	return m, []interface{}{&m.baseTestModule.properties, &m.SimpleName.Properties}
 }
 
 func (f *fooModule) Walk() bool {
@@ -96,35 +119,29 @@ func (f *fooModule) Walk() bool {
 
 type barModule struct {
 	SimpleName
-	properties struct {
-		Deps         []string
-		Ignored_deps []string
-		Bar          bool
-	}
+	baseTestModule
 }
 
 func newBarModule() (Module, []interface{}) {
 	m := &barModule{}
-	return m, []interface{}{&m.properties, &m.SimpleName.Properties}
-}
-
-func (b *barModule) Deps() []string {
-	return b.properties.Deps
-}
-
-func (b *barModule) IgnoreDeps() []string {
-	return b.properties.Ignored_deps
-}
-
-func (b *barModule) GenerateBuildActions(ModuleContext) {
-}
-
-func (b *barModule) Bar() bool {
-	return b.properties.Bar
+	return m, []interface{}{&m.baseTestModule.properties, &m.SimpleName.Properties}
 }
 
 func (b *barModule) Walk() bool {
 	return false
+}
+
+type incrementalModule struct {
+	SimpleName
+	baseTestModule
+	IncrementalModule
+}
+
+var _ Incremental = &incrementalModule{}
+
+func newIncrementalModule() (Module, []interface{}) {
+	m := &incrementalModule{}
+	return m, []interface{}{&m.baseTestModule.properties, &m.SimpleName.Properties}
 }
 
 type walkerDepsTag struct {
@@ -1512,4 +1529,338 @@ func TestSourceRootDirs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func incrementalSetup(t *testing.T) *Context {
+	ctx := NewContext()
+	fileSystem := map[string][]byte{
+		"Android.bp": []byte(`
+			incremental_module {
+					name: "MyIncrementalModule",
+					deps: ["MyBarModule"],
+			}
+
+			bar_module {
+					name: "MyBarModule",
+			}
+		`),
+	}
+	ctx.MockFileSystem(fileSystem)
+	ctx.RegisterBottomUpMutator("deps", depsMutator)
+	ctx.RegisterModuleType("incremental_module", newIncrementalModule)
+	ctx.RegisterModuleType("bar_module", newBarModule)
+
+	_, errs := ctx.ParseBlueprintsFiles("Android.bp", nil)
+	if len(errs) > 0 {
+		t.Errorf("unexpected parse errors:")
+		for _, err := range errs {
+			t.Errorf("  %s", err)
+		}
+		t.FailNow()
+	}
+
+	_, errs = ctx.ResolveDependencies(nil)
+	if len(errs) > 0 {
+		t.Errorf("unexpected dep errors:")
+		for _, err := range errs {
+			t.Errorf("  %s", err)
+		}
+		t.FailNow()
+	}
+
+	return ctx
+}
+
+func incrementalSetupForRestore(t *testing.T, orderOnlyStrings *[]string) (*Context, any) {
+	ctx := incrementalSetup(t)
+	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
+	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
+
+	providerHashes := make([]uint64, len(providerRegistry))
+	// Use fixed value since SetProvider hasn't been called yet, so we can't go
+	// through the providers of the module.
+	for k, v := range map[providerKey]any{
+		IncrementalTestProviderKey.providerKey: IncrementalTestProvider{
+			Value: barInfo.Name(),
+		},
+	} {
+		hash, err := proptools.CalculateHash(v)
+		if err != nil {
+			panic(fmt.Sprintf("Can't hash value of providers"))
+		}
+		providerHashes[k.id] = hash
+	}
+	cacheKey := calculateHashKey(incInfo, [][]uint64{providerHashes})
+	var providerValue any = IncrementalTestProvider{Value: "MyIncrementalModule"}
+	toCache := BuildActionCache{
+		cacheKey: &BuildActionCachedData{
+			Pos: &scanner.Position{
+				Filename: "Android.bp",
+				Line:     2,
+				Column:   4,
+				Offset:   4,
+			},
+			Providers: []CachedProvider{{
+				Id:    &IncrementalTestProviderKey.providerKey,
+				Value: &providerValue,
+			}},
+			OrderOnlyStrings: orderOnlyStrings,
+		},
+	}
+	ctx.SetIncrementalEnabled(true)
+	ctx.SetIncrementalAnalysis(true)
+	ctx.buildActionsFromCache = toCache
+
+	return ctx, providerValue
+}
+
+func calculateHashKey(m *moduleInfo, providerHashes [][]uint64) BuildActionCacheKey {
+	hash, err := proptools.CalculateHash(m.properties)
+	if err != nil {
+		panic(newPanicErrorf(err, "failed to calculate properties hash"))
+	}
+	cacheInput := new(BuildActionCacheInput)
+	cacheInput.PropertiesHash = hash
+	cacheInput.ProvidersHash = providerHashes
+	hash, err = proptools.CalculateHash(&cacheInput)
+	if err != nil {
+		panic(newPanicErrorf(err, "failed to calculate cache input hash"))
+	}
+	return BuildActionCacheKey{
+		Id:        m.ModuleCacheKey(),
+		InputHash: hash,
+	}
+}
+
+func TestCacheBuildActions(t *testing.T) {
+	ctx := incrementalSetup(t)
+	ctx.SetIncrementalEnabled(true)
+
+	_, errs := ctx.PrepareBuildActions(nil)
+	if len(errs) > 0 {
+		t.Errorf("unexpected errors calling generateModuleBuildActions:")
+		for _, err := range errs {
+			t.Errorf("  %s", err)
+		}
+		t.FailNow()
+	}
+
+	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
+	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
+	if len(ctx.buildActionsToCache) != 1 {
+		t.Errorf("build actions are not cached for the incremental module")
+	}
+	cacheKey := calculateHashKey(incInfo, [][]uint64{barInfo.providerInitialValueHashes})
+	cache := ctx.buildActionsToCache[cacheKey]
+	if cache == nil {
+		t.Errorf("failed to find cached build actions for the incremental module")
+	}
+	var providerValue any = IncrementalTestProvider{Value: "MyIncrementalModule"}
+	expectedCache := BuildActionCachedData{
+		Pos: &scanner.Position{
+			Filename: "Android.bp",
+			Line:     2,
+			Column:   4,
+			Offset:   4,
+		},
+		Providers: []CachedProvider{{
+			Id:    &IncrementalTestProviderKey.providerKey,
+			Value: &providerValue,
+		}},
+	}
+	if !reflect.DeepEqual(expectedCache, *cache) {
+		t.Errorf("expected: %v actual %v", expectedCache, *cache)
+	}
+}
+
+func TestRestoreBuildActions(t *testing.T) {
+	ctx, providerValue := incrementalSetupForRestore(t, nil)
+	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
+	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
+	_, errs := ctx.PrepareBuildActions(nil)
+	if len(errs) > 0 {
+		t.Errorf("unexpected errors calling generateModuleBuildActions:")
+		for _, err := range errs {
+			t.Errorf("  %s", err)
+		}
+		t.FailNow()
+	}
+
+	// Verify that the GenerateBuildActions was skipped for the incremental module
+	incRerun := incInfo.logicModule.(*incrementalModule).GenerateBuildActionsCalled
+	barRerun := barInfo.logicModule.(*barModule).GenerateBuildActionsCalled
+	if incRerun || !barRerun {
+		t.Errorf("failed to skip/rerun GenerateBuildActions: %t %t", incRerun, barRerun)
+	}
+	// Verify that the provider is set correctly for the incremental module
+	if !reflect.DeepEqual(incInfo.providers[IncrementalTestProviderKey.id], providerValue) {
+		t.Errorf("provider is not set correctly when restoring from cache")
+	}
+}
+
+func TestSkipNinjaForCacheHit(t *testing.T) {
+	ctx, _ := incrementalSetupForRestore(t, nil)
+	_, errs := ctx.PrepareBuildActions(nil)
+	if len(errs) > 0 {
+		t.Errorf("unexpected errors calling generateModuleBuildActions:")
+		for _, err := range errs {
+			t.Errorf("  %s", err)
+		}
+		t.FailNow()
+	}
+
+	buf := bytes.NewBuffer(nil)
+	w := newNinjaWriter(buf)
+	ctx.writeAllModuleActions(w, true, "test.ninja")
+	// Verify that soong updated the ninja file for the bar module and skipped the
+	// ninja file writing of the incremental module
+	file, err := ctx.fs.Open("test.0.ninja")
+	if err != nil {
+		t.Errorf("no ninja file for MyBarModule")
+	}
+	content := make([]byte, 1024)
+	file.Read(content)
+	if !strings.Contains(string(content), "build MyBarModule_phony_output: phony") {
+		t.Errorf("ninja file doesn't have build statements for MyBarModule: %s", string(content))
+	}
+
+	file, err = ctx.fs.Open("test_ninja_incremental/.-MyIncrementalModule-none-incremental_module.ninja")
+	if !os.IsNotExist(err) {
+		t.Errorf("shouldn't generate ninja file for MyIncrementalModule: %s", err.Error())
+	}
+}
+
+func TestNotSkipNinjaForCacheMiss(t *testing.T) {
+	ctx := incrementalSetup(t)
+	ctx.SetIncrementalEnabled(true)
+	ctx.SetIncrementalAnalysis(true)
+	_, errs := ctx.PrepareBuildActions(nil)
+	if len(errs) > 0 {
+		t.Errorf("unexpected errors calling generateModuleBuildActions:")
+		for _, err := range errs {
+			t.Errorf("  %s", err)
+		}
+		t.FailNow()
+	}
+
+	buf := bytes.NewBuffer(nil)
+	w := newNinjaWriter(buf)
+	ctx.writeAllModuleActions(w, true, "test.ninja")
+	// Verify that soong updated the ninja files for both the bar module and the
+	// incremental module
+	file, err := ctx.fs.Open("test.0.ninja")
+	if err != nil {
+		t.Errorf("no ninja file for MyBarModule")
+	}
+	content := make([]byte, 1024)
+	file.Read(content)
+	if !strings.Contains(string(content), "build MyBarModule_phony_output: phony") {
+		t.Errorf("ninja file doesn't have build statements for MyBarModule: %s", string(content))
+	}
+
+	file, err = ctx.fs.Open("test_ninja_incremental/.-MyIncrementalModule-none-incremental_module.ninja")
+	if err != nil {
+		t.Errorf("no ninja file for MyIncrementalModule")
+	}
+	file.Read(content)
+	if !strings.Contains(string(content), "build MyIncrementalModule_phony_output: phony") {
+		t.Errorf("ninja file doesn't have build statements for MyIncrementalModule: %s", string(content))
+	}
+}
+
+func TestOrderOnlyStringsCaching(t *testing.T) {
+	ctx := incrementalSetup(t)
+	ctx.SetIncrementalEnabled(true)
+	_, errs := ctx.PrepareBuildActions(nil)
+	if len(errs) > 0 {
+		t.Errorf("unexpected errors calling generateModuleBuildActions:")
+		for _, err := range errs {
+			t.Errorf("  %s", err)
+		}
+		t.FailNow()
+	}
+	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
+	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
+	bDef := buildDef{
+		Rule:             Phony,
+		OrderOnlyStrings: []string{"test.lib"},
+	}
+	incInfo.actionDefs.buildDefs = append(incInfo.actionDefs.buildDefs, &bDef)
+	barInfo.actionDefs.buildDefs = append(barInfo.actionDefs.buildDefs, &bDef)
+
+	buf := bytes.NewBuffer(nil)
+	w := newNinjaWriter(buf)
+	ctx.writeAllModuleActions(w, true, "test.ninja")
+
+	verifyOrderOnlyStringsCache(t, ctx, incInfo, barInfo)
+}
+
+func TestOrderOnlyStringsRestoring(t *testing.T) {
+	phony := "dedup-d479e9a8133ff998"
+	orderOnlyStrings := []string{phony}
+	ctx, _ := incrementalSetupForRestore(t, &orderOnlyStrings)
+	ctx.orderOnlyStringsFromCache = make(OrderOnlyStringsCache)
+	ctx.orderOnlyStringsFromCache[phony] = []string{"test.lib"}
+	_, errs := ctx.PrepareBuildActions(nil)
+	if len(errs) > 0 {
+		t.Errorf("unexpected errors calling generateModuleBuildActions:")
+		for _, err := range errs {
+			t.Errorf("  %s", err)
+		}
+		t.FailNow()
+	}
+
+	buf := bytes.NewBuffer(nil)
+	w := newNinjaWriter(buf)
+	ctx.writeAllModuleActions(w, true, "test.ninja")
+
+	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
+	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
+	verifyOrderOnlyStringsCache(t, ctx, incInfo, barInfo)
+
+	// Verify dedup-d479e9a8133ff998 is still written to the common ninja file even
+	// though MyBarModule no longer uses it.
+	expected := strings.Join([]string{"build", phony + ":", "phony", "test.lib"}, " ")
+	if !strings.Contains(buf.String(), expected) {
+		t.Errorf("phony target not found: %s", buf.String())
+	}
+}
+
+func verifyOrderOnlyStringsCache(t *testing.T, ctx *Context, incInfo, barInfo *moduleInfo) {
+	// Verify that soong cache all the order only strings that are used by the
+	// incremental modules
+	ok, key := mapContainsValue(ctx.orderOnlyStringsToCache, "test.lib")
+	if !ok {
+		t.Errorf("no order only strings used by incremetnal modules cached: %v", ctx.orderOnlyStringsToCache)
+	}
+
+	// Verify that the dedup-* order only strings used by MyIncrementalModule is
+	// cached along with its other cached values
+	cacheKey := calculateHashKey(incInfo, [][]uint64{barInfo.providerInitialValueHashes})
+	cache := ctx.buildActionsToCache[cacheKey]
+	if cache == nil {
+		t.Errorf("failed to find cached build actions for the incremental module")
+	}
+	if !listContainsValue(*cache.OrderOnlyStrings, key) {
+		t.Errorf("no order only strings cached for MyIncrementalModule: %v", *cache.OrderOnlyStrings)
+	}
+}
+
+func listContainsValue[K comparable](l []K, target K) bool {
+	for _, value := range l {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func mapContainsValue[K comparable, V comparable](m map[K][]V, target V) (bool, K) {
+	for k, v := range m {
+		if listContainsValue(v, target) {
+			return true, k
+		}
+	}
+	var key K
+	return false, key
 }

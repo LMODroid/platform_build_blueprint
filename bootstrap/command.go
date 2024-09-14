@@ -52,6 +52,14 @@ func RegisterGoModuleTypes(ctx *blueprint.Context) {
 	ctx.RegisterModuleType("blueprint_go_binary", newGoBinaryModuleFactory())
 }
 
+// GoModuleTypesAreWrapped is called by Soong before calling RunBlueprint to provide its own wrapped
+// implementations of bootstrap_go_package and blueprint_go_bianry.
+func GoModuleTypesAreWrapped() {
+	goModuleTypesAreWrapped = true
+}
+
+var goModuleTypesAreWrapped = false
+
 // RunBlueprint emits `args.OutFile` (a Ninja file) and returns the list of
 // its dependencies. These can be written to a `${args.OutFile}.d` file
 // so that it is correctly rebuilt when needed in case Blueprint is itself
@@ -100,9 +108,11 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 	}
 	ctx.EndEvent("list_modules")
 
-	ctx.RegisterBottomUpMutator("bootstrap_plugin_deps", pluginDeps)
+	ctx.RegisterBottomUpMutator("bootstrap_deps", BootstrapDeps)
 	ctx.RegisterSingletonType("bootstrap", newSingletonFactory(), false)
-	RegisterGoModuleTypes(ctx)
+	if !goModuleTypesAreWrapped {
+		RegisterGoModuleTypes(ctx)
+	}
 
 	ctx.BeginEvent("parse_bp")
 	if blueprintFiles, errs := ctx.ParseFileList(".", filesToParse, config); len(errs) > 0 {

@@ -178,11 +178,11 @@ type Context struct {
 	// latter will depend on the flag above.
 	incrementalEnabled bool
 
-	BuildActionsToCache       BuildActionCache
+	buildActionsToCache       BuildActionCache
 	buildActionsToCacheLock   sync.Mutex
-	BuildActionsFromCache     BuildActionCache
-	OrderOnlyStringsFromCache OrderOnlyStringsCache
-	OrderOnlyStringsToCache   OrderOnlyStringsCache
+	buildActionsFromCache     BuildActionCache
+	orderOnlyStringsFromCache OrderOnlyStringsCache
+	orderOnlyStringsToCache   OrderOnlyStringsCache
 }
 
 // A container for String keys. The keys can be used to gate build graph traversal
@@ -582,8 +582,8 @@ func newContext() *Context {
 		requiredNinjaMinor:          7,
 		requiredNinjaMicro:          0,
 		verifyProvidersAreUnchanged: true,
-		BuildActionsToCache:         make(BuildActionCache),
-		OrderOnlyStringsToCache:     make(OrderOnlyStringsCache),
+		buildActionsToCache:         make(BuildActionCache),
+		orderOnlyStringsToCache:     make(OrderOnlyStringsCache),
 	}
 }
 
@@ -726,24 +726,25 @@ func (c *Context) updateBuildActionsCache(key *BuildActionCacheKey, data *BuildA
 	if key != nil {
 		c.buildActionsToCacheLock.Lock()
 		defer c.buildActionsToCacheLock.Unlock()
-		c.BuildActionsToCache[*key] = data
+		c.buildActionsToCache[*key] = data
 	}
 }
 
 func (c *Context) getBuildActionsFromCache(key *BuildActionCacheKey) *BuildActionCachedData {
-	if c.BuildActionsFromCache != nil && key != nil {
-		return c.BuildActionsFromCache[*key]
+	if c.buildActionsFromCache != nil && key != nil {
+		return c.buildActionsFromCache[*key]
 	}
 	return nil
 }
 
 func (c *Context) CacheAllBuildActions(soongOutDir string) error {
-	return errors.Join(writeToCache(c, soongOutDir, BuildActionsCacheFile, &c.BuildActionsToCache),
-		writeToCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.OrderOnlyStringsToCache))
+	return errors.Join(writeToCache(c, soongOutDir, BuildActionsCacheFile, &c.buildActionsToCache),
+		writeToCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsToCache))
 }
 
 func writeToCache[T any](ctx *Context, soongOutDir string, fileName string, data *T) error {
-	file, err := os.Create(filepath.Join(ctx.SrcDir(), soongOutDir, fileName))
+	file, err := ctx.fs.OpenFile(filepath.Join(ctx.SrcDir(), soongOutDir, fileName),
+		os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
 	if err != nil {
 		return err
 	}
@@ -754,14 +755,14 @@ func writeToCache[T any](ctx *Context, soongOutDir string, fileName string, data
 }
 
 func (c *Context) RestoreAllBuildActions(soongOutDir string) error {
-	c.BuildActionsFromCache = make(BuildActionCache)
-	c.OrderOnlyStringsFromCache = make(OrderOnlyStringsCache)
-	return errors.Join(restoreFromCache(c, soongOutDir, BuildActionsCacheFile, &c.BuildActionsFromCache),
-		restoreFromCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.OrderOnlyStringsFromCache))
+	c.buildActionsFromCache = make(BuildActionCache)
+	c.orderOnlyStringsFromCache = make(OrderOnlyStringsCache)
+	return errors.Join(restoreFromCache(c, soongOutDir, BuildActionsCacheFile, &c.buildActionsFromCache),
+		restoreFromCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsFromCache))
 }
 
 func restoreFromCache[T any](ctx *Context, soongOutDir string, fileName string, data *T) error {
-	file, err := os.Open(filepath.Join(ctx.SrcDir(), soongOutDir, fileName))
+	file, err := ctx.fs.Open(filepath.Join(ctx.SrcDir(), soongOutDir, fileName))
 	if err != nil {
 		if os.IsNotExist(err) {
 			err = nil
@@ -852,6 +853,18 @@ func (c *Context) RegisterBottomUpMutator(name string, mutator BottomUpMutator) 
 	c.variantMutatorNames = append(c.variantMutatorNames, name)
 
 	return info
+}
+
+// HasMutatorFinished returns true if the given mutator has finished running.
+// It will panic if given an invalid mutator name.
+func (c *Context) HasMutatorFinished(mutatorName string) bool {
+	for _, mutator := range c.mutatorInfo {
+		if mutator.name == mutatorName {
+			finished, ok := c.finishedMutators[mutator]
+			return ok && finished
+		}
+	}
+	panic(fmt.Sprintf("unknown mutator %q", mutatorName))
 }
 
 type MutatorHandle interface {
@@ -4698,7 +4711,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 			wg.Add(1)
 			go func(file string, batchModules []*moduleInfo) {
 				defer wg.Done()
-				f, err := os.OpenFile(JoinPath(c.SrcDir(), file), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+				f, err := c.fs.OpenFile(JoinPath(c.SrcDir(), file), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
 				if err != nil {
 					errorCh <- fmt.Errorf("error opening Ninja file shard: %s", err)
 					return
@@ -4783,7 +4796,7 @@ func orderOnlyForIncremental(c *Context, modules []*moduleInfo, phonys *localBui
 		}
 
 		// update the order only string cache with the info found above.
-		if data, ok := c.BuildActionsToCache[*mod.buildActionCacheKey]; ok {
+		if data, ok := c.buildActionsToCache[*mod.buildActionCacheKey]; ok {
 			data.OrderOnlyStrings = orderOnlyStrings
 		}
 
@@ -4802,10 +4815,10 @@ func orderOnlyForIncremental(c *Context, modules []*moduleInfo, phonys *localBui
 		// reference a dedup-* phony that no longer exists.
 		for _, dep := range *orderOnlyStrings {
 			// nothing changed to this phony, the cached value is still valid
-			if _, ok := c.OrderOnlyStringsToCache[dep]; ok {
+			if _, ok := c.orderOnlyStringsToCache[dep]; ok {
 				continue
 			}
-			orderOnlyStrings, ok := c.OrderOnlyStringsFromCache[dep]
+			orderOnlyStrings, ok := c.orderOnlyStringsFromCache[dep]
 			if !ok {
 				return fmt.Errorf("no cached value found for order only dep: %s", dep)
 			}
@@ -4816,13 +4829,13 @@ func orderOnlyForIncremental(c *Context, modules []*moduleInfo, phonys *localBui
 				Optional:      true,
 			}
 			phonys.buildDefs = append(phonys.buildDefs, &phony)
-			c.OrderOnlyStringsToCache[dep] = orderOnlyStrings
+			c.orderOnlyStringsToCache[dep] = orderOnlyStrings
 		}
 	}
 	return nil
 }
 func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo, headerTemplate *template.Template) error {
-	bf, err := os.OpenFile(JoinPath(c.SrcDir(), baseFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+	bf, err := c.fs.OpenFile(JoinPath(c.SrcDir(), baseFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
 	if err != nil {
 		return err
 	}
@@ -4839,7 +4852,7 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 		moduleFile := filepath.Join(ninjaPath, module.ModuleCacheKey()+".ninja")
 		if !module.incrementalRestored {
 			err := func() error {
-				mf, err := os.OpenFile(JoinPath(c.SrcDir(), moduleFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+				mf, err := c.fs.OpenFile(JoinPath(c.SrcDir(), moduleFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
 				if err != nil {
 					return err
 				}
@@ -5035,7 +5048,10 @@ func scanBuildDef(candidates *sync.Map, b *buildDef, incremental bool) {
 				m.first = nil
 			})
 			b.OrderOnlyStrings = m.phony.OutputStrings
-			m.usedByIncremental = incremental
+			// don't override the value with false if it was set to true already
+			if incremental {
+				m.usedByIncremental = incremental
+			}
 		}
 	}
 }
@@ -5068,7 +5084,7 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 		if candidate.phony != nil {
 			phonys = append(phonys, candidate.phony)
 			if candidate.usedByIncremental {
-				c.OrderOnlyStringsToCache[candidate.phony.OutputStrings[0]] =
+				c.orderOnlyStringsToCache[candidate.phony.OutputStrings[0]] =
 					candidate.phony.InputStrings
 			}
 		}

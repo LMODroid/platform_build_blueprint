@@ -18,11 +18,13 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"io/fs"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -91,6 +93,10 @@ type ReaderAtSeekerCloser interface {
 type FileSystem interface {
 	// Open opens a file for reading. Follows symlinks.
 	Open(name string) (ReaderAtSeekerCloser, error)
+
+	// OpenFile opens a file for read/write, if the file does not exist, and the
+	// O_CREATE flag is passed, it is created with mode perm (before umask).
+	OpenFile(name string, flag int, perm fs.FileMode) (io.WriteCloser, error)
 
 	// Exists returns whether the file exists and whether it is a directory.  Follows symlinks.
 	Exists(name string) (bool, bool, error)
@@ -203,6 +209,15 @@ func (fs *osFs) Open(name string) (ReaderAtSeekerCloser, error) {
 	return &OsFile{f, fs}, nil
 }
 
+func (fs *osFs) OpenFile(name string, flag int, perm fs.FileMode) (io.WriteCloser, error) {
+	fs.acquire()
+	f, err := os.OpenFile(fs.toAbs(name), flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &OsFile{f, fs}, nil
+}
+
 func (fs *osFs) Exists(name string) (bool, bool, error) {
 	stat, err := os.Stat(fs.toAbs(name))
 	if err == nil {
@@ -282,6 +297,7 @@ type mockFs struct {
 	dirs     map[string]bool
 	symlinks map[string]string
 	all      []string
+	lock     sync.RWMutex
 }
 
 func (m *mockFs) followSymlinks(name string) string {
@@ -310,6 +326,8 @@ func (m *mockFs) followSymlinks(name string) string {
 }
 
 func (m *mockFs) Open(name string) (ReaderAtSeekerCloser, error) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
 	name = filepath.Clean(name)
 	name = m.followSymlinks(name)
 	if f, ok := m.files[name]; ok {
@@ -329,7 +347,40 @@ func (m *mockFs) Open(name string) (ReaderAtSeekerCloser, error) {
 	}
 }
 
+type MockFileWriter struct {
+	name string
+	fs   *mockFs
+}
+
+func (b *MockFileWriter) Write(p []byte) (n int, err error) {
+	b.fs.lock.Lock()
+	defer b.fs.lock.Unlock()
+	b.fs.files[b.name] = append(b.fs.files[b.name], p...)
+	return n, nil
+}
+func (m *mockFs) OpenFile(name string, flag int, perm fs.FileMode) (io.WriteCloser, error) {
+	// For mockFs we simplify the logic here by just either creating a new file or
+	// truncating an existing one.
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	name = filepath.Clean(name)
+	name = m.followSymlinks(name)
+	m.files[name] = []byte{}
+	return struct {
+		io.Closer
+		io.Writer
+	}{
+		ioutil.NopCloser(nil),
+		&MockFileWriter{
+			name: name,
+			fs:   m,
+		},
+	}, nil
+}
+
 func (m *mockFs) Exists(name string) (bool, bool, error) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
 	name = filepath.Clean(name)
 	name = m.followSymlinks(name)
 	if _, ok := m.files[name]; ok {
@@ -342,6 +393,8 @@ func (m *mockFs) Exists(name string) (bool, bool, error) {
 }
 
 func (m *mockFs) IsDir(name string) (bool, error) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
 	dir := filepath.Dir(name)
 	if dir != "." && dir != "/" {
 		isDir, err := m.IsDir(dir)
@@ -370,6 +423,8 @@ func (m *mockFs) IsDir(name string) (bool, error) {
 }
 
 func (m *mockFs) IsSymlink(name string) (bool, error) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
 	dir, file := quickSplit(name)
 	dir = m.followSymlinks(dir)
 	name = filepath.Join(dir, file)
@@ -442,6 +497,8 @@ func (ms *mockStat) ModTime() time.Time { return time.Time{} }
 func (ms *mockStat) Sys() interface{}   { return nil }
 
 func (m *mockFs) Lstat(name string) (os.FileInfo, error) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
 	dir, file := quickSplit(name)
 	dir = m.followSymlinks(dir)
 	name = filepath.Join(dir, file)
@@ -466,6 +523,8 @@ func (m *mockFs) Lstat(name string) (os.FileInfo, error) {
 }
 
 func (m *mockFs) Stat(name string) (os.FileInfo, error) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
 	name = filepath.Clean(name)
 	origName := name
 	name = m.followSymlinks(name)

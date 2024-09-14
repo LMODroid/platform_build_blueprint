@@ -360,9 +360,11 @@ type BaseModuleContext interface {
 	// This method shouldn't be used directly, prefer the type-safe android.SetProvider instead.
 	SetProvider(provider AnyProviderKey, value any)
 
-	EarlyGetMissingDependencies() []string
+	// HasMutatorFinished returns true if the given mutator has finished running.
+	// It will panic if given an invalid mutator name.
+	HasMutatorFinished(mutatorName string) bool
 
-	OtherModuleProviderInitialValueHashes(module Module) []uint64
+	EarlyGetMissingDependencies() []string
 
 	base() *baseModuleContext
 }
@@ -496,6 +498,10 @@ func (d *baseModuleContext) Namespace() Namespace {
 	return d.context.nameInterface.GetNamespace(newNamespaceContext(d.module))
 }
 
+func (d *baseModuleContext) HasMutatorFinished(mutatorName string) bool {
+	return d.context.HasMutatorFinished(mutatorName)
+}
+
 var _ ModuleContext = (*moduleContext)(nil)
 
 type moduleContext struct {
@@ -619,10 +625,6 @@ func (m *baseModuleContext) SetProvider(provider AnyProviderKey, value interface
 	m.context.setProvider(m.module, provider.provider(), value)
 }
 
-func (m *baseModuleContext) OtherModuleProviderInitialValueHashes(module Module) []uint64 {
-	return m.context.moduleInfo[module].providerInitialValueHashes
-}
-
 func (m *moduleContext) cacheModuleBuildActions(key *BuildActionCacheKey) {
 	var providers []CachedProvider
 	for i, p := range m.module.providers {
@@ -666,18 +668,16 @@ func (m *moduleContext) restoreModuleBuildActions() (bool, *BuildActionCacheKey)
 		hash, err := proptools.CalculateHash(m.module.properties)
 		if err != nil {
 			panic(newPanicErrorf(err, "failed to calculate properties hash"))
-			return false, nil
 		}
 		cacheInput := new(BuildActionCacheInput)
 		cacheInput.PropertiesHash = hash
 		m.VisitDirectDeps(func(module Module) {
 			cacheInput.ProvidersHash =
-				append(cacheInput.ProvidersHash, m.OtherModuleProviderInitialValueHashes(module))
+				append(cacheInput.ProvidersHash, m.context.moduleInfo[module].providerInitialValueHashes)
 		})
 		hash, err = proptools.CalculateHash(&cacheInput)
 		if err != nil {
 			panic(newPanicErrorf(err, "failed to calculate cache input hash"))
-			return false, nil
 		}
 		cacheKey = &BuildActionCacheKey{
 			Id:        m.ModuleCacheKey(),
