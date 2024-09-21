@@ -931,14 +931,14 @@ type BaseMutatorContext interface {
 
 	// MutatorName returns the name that this mutator was registered with.
 	MutatorName() string
-}
-
-type TopDownMutatorContext interface {
-	BaseMutatorContext
 
 	// CreateModule creates a new module by calling the factory method for the specified moduleType, and applies
 	// the specified property structs to it as if the properties were set in a blueprint file.
 	CreateModule(ModuleFactory, string, ...interface{}) Module
+}
+
+type TopDownMutatorContext interface {
+	BaseMutatorContext
 }
 
 type BottomUpMutatorContext interface {
