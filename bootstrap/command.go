@@ -161,13 +161,9 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 	}
 
 	providersValidationChan := make(chan []error, 1)
-	if ctx.GetVerifyProvidersAreUnchanged() {
-		go func() {
-			providersValidationChan <- ctx.VerifyProvidersWereUnchanged()
-		}()
-	} else {
-		providersValidationChan <- nil
-	}
+	go func() {
+		providersValidationChan <- ctx.VerifyProvidersWereUnchanged()
+	}()
 
 	var out blueprint.StringWriterWriter
 	var f *os.File

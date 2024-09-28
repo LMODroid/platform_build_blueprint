@@ -396,11 +396,8 @@ func (s *singletonContext) ModuleVariantsFromName(referer Module, name string) [
 		return nil
 	}
 	result := make([]Module, 0, len(moduleGroup.modules))
-	for _, module := range moduleGroup.modules {
-		moduleInfo := module.module()
-		if moduleInfo != nil {
-			result = append(result, moduleInfo.logicModule)
-		}
+	for _, moduleInfo := range moduleGroup.modules {
+		result = append(result, moduleInfo.logicModule)
 	}
 	return result
 }

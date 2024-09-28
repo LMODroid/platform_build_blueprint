@@ -633,12 +633,6 @@ func Test_findVariant(t *testing.T) {
 			variations: variationMap{
 				map[string]string{
 					"normal": "normal",
-					"local":  "local",
-				},
-			},
-			dependencyVariations: variationMap{
-				map[string]string{
-					"normal": "normal",
 				},
 			},
 		},
@@ -649,38 +643,14 @@ func Test_findVariant(t *testing.T) {
 		target  int
 	}
 
-	makeDependencyGroup := func(in ...interface{}) *moduleGroup {
+	makeDependencyGroup := func(in ...*moduleInfo) *moduleGroup {
 		group := &moduleGroup{
 			name: "dep",
 		}
-		for _, x := range in {
-			switch m := x.(type) {
-			case *moduleInfo:
-				m.group = group
-				group.modules = append(group.modules, m)
-			case alias:
-				// aliases may need to target modules that haven't been processed
-				// yet, put an empty alias in for now.
-				group.modules = append(group.modules, nil)
-			default:
-				t.Fatalf("unexpected type %T", x)
-			}
+		for _, m := range in {
+			m.group = group
+			group.modules = append(group.modules, m)
 		}
-
-		for i, x := range in {
-			switch m := x.(type) {
-			case *moduleInfo:
-				// already added in the first pass
-			case alias:
-				group.modules[i] = &moduleAlias{
-					variant: m.variant,
-					target:  group.modules[m.target].moduleOrAliasTarget(),
-				}
-			default:
-				t.Fatalf("unexpected type %T", x)
-			}
-		}
-
 		return group
 	}
 
@@ -711,38 +681,6 @@ func Test_findVariant(t *testing.T) {
 			far:        false,
 			reverse:    false,
 			want:       "normal",
-		},
-		{
-			name: "AddVariationDependencies(nil) to alias",
-			// A dependency with an alias that matches the non-local variations of the module
-			possibleDeps: makeDependencyGroup(
-				alias{
-					variant: variant{
-						name: "normal",
-						variations: variationMap{
-							map[string]string{
-								"normal": "normal",
-							},
-						},
-					},
-					target: 1,
-				},
-				&moduleInfo{
-					variant: variant{
-						name: "normal_a",
-						variations: variationMap{
-							map[string]string{
-								"normal": "normal",
-								"a":      "a",
-							},
-						},
-					},
-				},
-			),
-			variations: nil,
-			far:        false,
-			reverse:    false,
-			want:       "normal_a",
 		},
 		{
 			name: "AddVariationDependencies(a)",
@@ -791,81 +729,6 @@ func Test_findVariant(t *testing.T) {
 			reverse:    false,
 			want:       "far",
 		},
-		{
-			name: "AddFarVariationDependencies(far) to alias",
-			// A dependency with far variations and aliases
-			possibleDeps: makeDependencyGroup(
-				alias{
-					variant: variant{
-						name: "far",
-						variations: variationMap{
-							map[string]string{
-								"far": "far",
-							},
-						},
-					},
-					target: 2,
-				},
-				&moduleInfo{
-					variant: variant{
-						name: "far_a",
-						variations: variationMap{
-							map[string]string{
-								"far": "far",
-								"a":   "a",
-							},
-						},
-					},
-				},
-				&moduleInfo{
-					variant: variant{
-						name: "far_b",
-						variations: variationMap{
-							map[string]string{
-								"far": "far",
-								"b":   "b",
-							},
-						},
-					},
-				},
-			),
-			variations: []Variation{{"far", "far"}},
-			far:        true,
-			reverse:    false,
-			want:       "far_b",
-		},
-		{
-			name: "AddFarVariationDependencies(far, b) to missing",
-			// A dependency with far variations and aliases
-			possibleDeps: makeDependencyGroup(
-				alias{
-					variant: variant{
-						name: "far",
-						variations: variationMap{
-							map[string]string{
-								"far": "far",
-							},
-						},
-					},
-					target: 1,
-				},
-				&moduleInfo{
-					variant: variant{
-						name: "far_a",
-						variations: variationMap{
-							map[string]string{
-								"far": "far",
-								"a":   "a",
-							},
-						},
-					},
-				},
-			),
-			variations: []Variation{{"far", "far"}, {"a", "b"}},
-			far:        true,
-			reverse:    false,
-			want:       "nil",
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -896,7 +759,7 @@ func Test_parallelVisit(t *testing.T) {
 				name: name,
 			},
 		}
-		m.group.modules = modulesOrAliases{m}
+		m.group.modules = moduleList{m}
 		return m
 	}
 	moduleA := create("A")
@@ -1513,7 +1376,7 @@ func TestSourceRootDirs(t *testing.T) {
 			for _, modName := range tc.expectedModuleDefs {
 				allMods := ctx.moduleGroupFromName(modName, nil)
 				if allMods == nil || len(allMods.modules) != 1 {
-					mods := modulesOrAliases{}
+					mods := moduleList{}
 					if allMods != nil {
 						mods = allMods.modules
 					}

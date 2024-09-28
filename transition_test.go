@@ -104,7 +104,7 @@ const testTransitionBp = `
 
 func getTransitionModule(ctx *Context, name, variant string) *transitionModule {
 	group := ctx.moduleGroupFromName(name, nil)
-	module := group.moduleOrAliasByVariantName(variant).module()
+	module := group.moduleByVariantName(variant)
 	return module.logicModule.(*transitionModule)
 }
 
@@ -112,8 +112,8 @@ func checkTransitionVariants(t *testing.T, ctx *Context, name string, expectedVa
 	t.Helper()
 	group := ctx.moduleGroupFromName(name, nil)
 	var gotVariants []string
-	for _, variant := range group.modules {
-		gotVariants = append(gotVariants, variant.moduleOrAliasVariant().variations.get("transition"))
+	for _, module := range group.modules {
+		gotVariants = append(gotVariants, module.variant.variations.get("transition"))
 	}
 	if !slices.Equal(expectedVariants, gotVariants) {
 		t.Errorf("expected variants of %q to be %q, got %q", name, expectedVariants, gotVariants)
