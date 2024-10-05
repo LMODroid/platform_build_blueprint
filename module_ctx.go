@@ -972,6 +972,16 @@ type BottomUpMutatorContext interface {
 	// be ordered correctly for all future mutator passes.
 	AddVariationDependencies([]Variation, DependencyTag, ...string) []Module
 
+	// AddReverseVariationDependencies adds a dependency from the named module to the current
+	// module. The given variations will be added to the current module's varations, and then the
+	// result will be used to find the correct variation of the depending module, which must exist.
+	//
+	// Does not affect the ordering of the current mutator pass, but will be ordered
+	// correctly for all future mutator passes.  All reverse dependencies for a destination module are
+	// collected until the end of the mutator pass, sorted by name, and then appended to the destination
+	// module's dependency list.
+	AddReverseVariationDependency([]Variation, DependencyTag, string)
+
 	// AddFarVariationDependencies adds deps as dependencies of the current module, but uses the
 	// variations argument to select which variant of the dependency to use.  It returns a slice of
 	// modules for each dependency (some entries may be nil).  A variant of the dependency must
@@ -1081,15 +1091,42 @@ func (mctx *mutatorContext) AddReverseDependency(module Module, tag DependencyTa
 		panic("BaseDependencyTag is not allowed to be used directly!")
 	}
 
-	destModule, errs := mctx.context.findReverseDependency(mctx.context.moduleInfo[module], mctx.config, destName)
+	destModule, errs := mctx.context.findReverseDependency(mctx.context.moduleInfo[module], mctx.config, nil, destName)
 	if len(errs) > 0 {
 		mctx.errs = append(mctx.errs, errs...)
+		return
+	}
+
+	if destModule == nil {
+		// allowMissingDependencies is true and the module wasn't found
 		return
 	}
 
 	mctx.reverseDeps = append(mctx.reverseDeps, reverseDep{
 		destModule,
 		depInfo{mctx.context.moduleInfo[module], tag},
+	})
+}
+
+func (mctx *mutatorContext) AddReverseVariationDependency(variations []Variation, tag DependencyTag, destName string) {
+	if _, ok := tag.(BaseDependencyTag); ok {
+		panic("BaseDependencyTag is not allowed to be used directly!")
+	}
+
+	destModule, errs := mctx.context.findReverseDependency(mctx.module, mctx.config, variations, destName)
+	if len(errs) > 0 {
+		mctx.errs = append(mctx.errs, errs...)
+		return
+	}
+
+	if destModule == nil {
+		// allowMissingDependencies is true and the module wasn't found
+		return
+	}
+
+	mctx.reverseDeps = append(mctx.reverseDeps, reverseDep{
+		destModule,
+		depInfo{mctx.module, tag},
 	})
 }
 

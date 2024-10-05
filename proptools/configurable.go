@@ -111,6 +111,17 @@ func (c *ConfigurableCondition) String() string {
 	return sb.String()
 }
 
+func (c *ConfigurableCondition) toParserConfigurableCondition() parser.ConfigurableCondition {
+	var args []parser.String
+	for _, arg := range c.args {
+		args = append(args, parser.String{Value: arg})
+	}
+	return parser.ConfigurableCondition{
+		FunctionName: c.functionName,
+		Args:         args,
+	}
+}
+
 type configurableValueType int
 
 const (
@@ -240,6 +251,33 @@ type ConfigurablePattern struct {
 	binding     string
 }
 
+func (c ConfigurablePattern) toParserSelectPattern() parser.SelectPattern {
+	switch c.typ {
+	case configurablePatternTypeString:
+		return parser.SelectPattern{
+			Value:   &parser.String{Value: c.stringValue},
+			Binding: parser.Variable{Name: c.binding},
+		}
+	case configurablePatternTypeBool:
+		return parser.SelectPattern{
+			Value:   &parser.Bool{Value: c.boolValue},
+			Binding: parser.Variable{Name: c.binding},
+		}
+	case configurablePatternTypeDefault:
+		return parser.SelectPattern{
+			Value:   &parser.String{Value: "__soong_conditions_default__"},
+			Binding: parser.Variable{Name: c.binding},
+		}
+	case configurablePatternTypeAny:
+		return parser.SelectPattern{
+			Value:   &parser.String{Value: "__soong_conditions_any__"},
+			Binding: parser.Variable{Name: c.binding},
+		}
+	default:
+		panic(fmt.Sprintf("unknown type %d", c.typ))
+	}
+}
+
 func NewStringConfigurablePattern(s string) ConfigurablePattern {
 	return ConfigurablePattern{
 		typ:         configurablePatternTypeString,
@@ -305,6 +343,17 @@ func (p *ConfigurablePattern) matchesValueType(v ConfigurableValue) bool {
 type ConfigurableCase[T ConfigurableElements] struct {
 	patterns []ConfigurablePattern
 	value    parser.Expression
+}
+
+func (c *ConfigurableCase[T]) toParserConfigurableCase() *parser.SelectCase {
+	var patterns []parser.SelectPattern
+	for _, p := range c.patterns {
+		patterns = append(patterns, p.toParserSelectPattern())
+	}
+	return &parser.SelectCase{
+		Patterns: patterns,
+		Value:    c.value,
+	}
 }
 
 type configurableCaseReflection interface {
@@ -838,6 +887,7 @@ type configurableReflection interface {
 	clone() any
 	isEmpty() bool
 	printfInto(value string) error
+	toExpression() (*parser.Expression, error)
 }
 
 // Same as configurableReflection, but since initialize needs to take a pointer
@@ -884,6 +934,39 @@ func (c Configurable[T]) setAppend(append any, replace bool, prepend bool) {
 	if c.inner == c.inner.next {
 		panic("pointer loop")
 	}
+}
+
+func (c Configurable[T]) toExpression() (*parser.Expression, error) {
+	var err error
+	var result *parser.Select
+	var tail *parser.Select
+	for curr := c.inner; curr != nil; curr = curr.next {
+		if curr.replace == true {
+			return nil, fmt.Errorf("Cannot turn a configurable property with replacements into an expression; " +
+				"replacements can only be created via soong code / defaults squashing, not simply in a bp file")
+		}
+		if curr.single.isEmpty() {
+			continue
+		}
+		if result == nil {
+			result, err = curr.single.toExpression()
+			if err != nil {
+				return nil, err
+			}
+			tail = result
+		} else {
+			tail.Append, err = curr.single.toExpression()
+			if err != nil {
+				return nil, err
+			}
+			tail = tail.Append.(*parser.Select)
+		}
+	}
+	if result == nil {
+		return nil, nil
+	}
+	var result2 parser.Expression = result
+	return &result2, nil
 }
 
 func appendPostprocessors[T ConfigurableElements](a, b [][]postProcessor[T], newBase int) [][]postProcessor[T] {
@@ -987,6 +1070,25 @@ func (c *singleConfigurable[T]) printfInto(value string) error {
 		}
 	}
 	return nil
+}
+
+func (c *singleConfigurable[T]) toExpression() (*parser.Select, error) {
+	if c.scope != nil {
+		return nil, fmt.Errorf("Cannot turn a select with a scope back into an expression")
+	}
+	var conditions []parser.ConfigurableCondition
+	for _, cond := range c.conditions {
+		conditions = append(conditions, cond.toParserConfigurableCondition())
+	}
+	var cases []*parser.SelectCase
+	for _, case_ := range c.cases {
+		cases = append(cases, case_.toParserConfigurableCase())
+	}
+	result := &parser.Select{
+		Conditions: conditions,
+		Cases:      cases,
+	}
+	return result, nil
 }
 
 func (c Configurable[T]) clone() any {

@@ -1905,7 +1905,7 @@ func (c *Context) addDependency(module *moduleInfo, config any, tag DependencyTa
 	}}
 }
 
-func (c *Context) findReverseDependency(module *moduleInfo, config any, destName string) (*moduleInfo, []error) {
+func (c *Context) findReverseDependency(module *moduleInfo, config any, requestedVariations []Variation, destName string) (*moduleInfo, []error) {
 	if destName == module.Name() {
 		return nil, []error{&BlueprintError{
 			Err: fmt.Errorf("%q depends on itself", destName),
@@ -1922,13 +1922,13 @@ func (c *Context) findReverseDependency(module *moduleInfo, config any, destName
 		}}
 	}
 
-	if m := c.findExactVariantOrSingle(module, config, possibleDeps, true); m != nil {
+	if m, _ := c.findVariant(module, config, possibleDeps, requestedVariations, false, true); m != nil {
 		return m, nil
 	}
 
 	if c.allowMissingDependencies {
 		// Allow missing variants.
-		return module, c.discoveredMissingDependencies(module, destName, module.variant.variations)
+		return nil, c.discoveredMissingDependencies(module, destName, module.variant.variations)
 	}
 
 	return nil, []error{&BlueprintError{

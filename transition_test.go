@@ -16,12 +16,13 @@ package blueprint
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 )
 
-func testTransition(bp string) (*Context, []error) {
+func testTransitionCommon(bp string, ctxHook func(*Context)) (*Context, []error) {
 	ctx := newContext()
 	ctx.MockFileSystem(map[string][]byte{
 		"Android.bp": []byte(bp),
@@ -32,6 +33,11 @@ func testTransition(bp string) (*Context, []error) {
 	ctx.RegisterBottomUpMutator("post_transition_deps", postTransitionDepsMutator)
 
 	ctx.RegisterModuleType("transition_module", newTransitionModule)
+
+	if ctxHook != nil {
+		ctxHook(ctx)
+	}
+
 	_, errs := ctx.ParseBlueprintsFiles("Android.bp", nil)
 	if len(errs) > 0 {
 		return nil, errs
@@ -45,6 +51,16 @@ func testTransition(bp string) (*Context, []error) {
 	return ctx, nil
 }
 
+func testTransition(bp string) (*Context, []error) {
+	return testTransitionCommon(bp, nil)
+}
+
+func testTransitionAllowMissingDeps(bp string) (*Context, []error) {
+	return testTransitionCommon(bp, func(ctx *Context) {
+		ctx.SetAllowMissingDependencies(true)
+	})
+}
+
 func assertNoErrors(t *testing.T, errs []error) {
 	t.Helper()
 	if len(errs) > 0 {
@@ -53,6 +69,25 @@ func assertNoErrors(t *testing.T, errs []error) {
 			t.Errorf("  %s", err)
 		}
 		t.FailNow()
+	}
+}
+
+func assertOneErrorMatches(t *testing.T, errs []error, re string) {
+	t.Helper()
+	if len(errs) == 0 {
+		t.Fatalf("expected 1 error, but found 0")
+	}
+	if len(errs) > 1 {
+		t.Errorf("expected exactly 1 error, but found:")
+		for _, err := range errs {
+			t.Errorf("  %s", err)
+		}
+		t.FailNow()
+	}
+	if match, err := regexp.MatchString(re, errs[0].Error()); err != nil {
+		t.Fatal(err.Error())
+	} else if !match {
+		t.Fatalf("expected error matching %q, but got: %q", re, errs[0].Error())
 	}
 }
 
@@ -284,6 +319,60 @@ func TestPostTransitionReverseDeps(t *testing.T) {
 	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "B", "a2"))
 }
 
+func TestPostTransitionReverseVariationDeps(t *testing.T) {
+	ctx, errs := testTransition(`
+		transition_module {
+			name: "A",
+			split: ["a"],
+		}
+
+		transition_module {
+			name: "B",
+			split: ["b"],
+			post_transition_reverse_variation_deps: ["A(a)"],
+		}
+	`)
+	assertNoErrors(t, errs)
+
+	checkTransitionVariants(t, ctx, "A", []string{"a"})
+	checkTransitionVariants(t, ctx, "B", []string{"b"})
+
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "A", "a"), "B(b)")
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "B", "b"))
+}
+
+func TestPostTransitionReverseDepsErrorOnMissingDep(t *testing.T) {
+	_, errs := testTransition(`
+		transition_module {
+			name: "A",
+			split: ["a"],
+		}
+
+		transition_module {
+			name: "B",
+			split: ["b"],
+			post_transition_reverse_deps: ["A"],
+		}
+	`)
+	assertOneErrorMatches(t, errs, `reverse dependency "A" of "B" missing variant:\s*transition:b\s*available variants:\s*transition:a`)
+}
+
+func TestPostTransitionReverseDepsAllowMissingDeps(t *testing.T) {
+	_, errs := testTransitionAllowMissingDeps(`
+		transition_module {
+			name: "A",
+			split: ["a"],
+		}
+
+		transition_module {
+			name: "B",
+			split: ["b"],
+			post_transition_reverse_deps: ["A"],
+		}
+	`)
+	assertNoErrors(t, errs)
+}
+
 func TestPostTransitionDepsMissingVariant(t *testing.T) {
 	// TODO: eventually this will create the missing variant on demand
 	_, errs := testTransition(fmt.Sprintf(testTransitionBp,
@@ -365,13 +454,14 @@ func (transitionTestMutator) Mutate(ctx BottomUpMutatorContext, variation string
 type transitionModule struct {
 	SimpleName
 	properties struct {
-		Deps                         []string
-		Post_transition_deps         []string
-		Post_transition_reverse_deps []string
-		Split                        []string
-		Outgoing                     *string
-		Incoming                     *string
-		Post_transition_incoming     *string
+		Deps                                   []string
+		Post_transition_deps                   []string
+		Post_transition_reverse_deps           []string
+		Post_transition_reverse_variation_deps []string
+		Split                                  []string
+		Outgoing                               *string
+		Incoming                               *string
+		Post_transition_incoming               *string
 
 		Mutated string `blueprint:"mutated"`
 	}
@@ -393,6 +483,8 @@ func (f *transitionModule) IgnoreDeps() []string {
 	return nil
 }
 
+var nameAndVariantRegexp = regexp.MustCompile(`([a-zA-Z0-9_]+)\(([a-zA-Z0-9_]+)\)`)
+
 func postTransitionDepsMutator(mctx BottomUpMutatorContext) {
 	if m, ok := mctx.Module().(*transitionModule); ok {
 		for _, dep := range m.properties.Post_transition_deps {
@@ -405,6 +497,15 @@ func postTransitionDepsMutator(mctx BottomUpMutatorContext) {
 		}
 		for _, dep := range m.properties.Post_transition_reverse_deps {
 			mctx.AddReverseDependency(m, walkerDepsTag{follow: true}, dep)
+		}
+		for _, dep := range m.properties.Post_transition_reverse_variation_deps {
+			match := nameAndVariantRegexp.FindStringSubmatch(dep)
+			if len(match) == 0 || match[0] != dep {
+				panic(fmt.Sprintf("Invalid Post_transition_reverse_variation_deps: %q. Expected module_name(variant)", dep))
+			}
+			mctx.AddReverseVariationDependency([]Variation{
+				{Mutator: "transition", Variation: match[2]},
+			}, walkerDepsTag{follow: true}, match[1])
 		}
 	}
 }
