@@ -106,6 +106,24 @@ type Module interface {
 	GenerateBuildActions(ModuleContext)
 }
 
+type ModuleProxy struct {
+	module Module
+}
+
+func CreateModuleProxy(module Module) ModuleProxy {
+	return ModuleProxy{
+		module: module,
+	}
+}
+
+func (m ModuleProxy) Name() string {
+	return m.module.Name()
+}
+
+func (m ModuleProxy) GenerateBuildActions(context ModuleContext) {
+	m.module.GenerateBuildActions(context)
+}
+
 // A DynamicDependerModule is a Module that may add dependencies that do not
 // appear in its "deps" property.  Any Module that implements this interface
 // will have its DynamicDependencies method called by the Context that created
@@ -129,7 +147,7 @@ type EarlyModuleContext interface {
 	Module() Module
 
 	// ModuleName returns the name of the module.  This is generally the value that was returned by Module.Name() when
-	// the module was created, but may have been modified by calls to BaseMutatorContext.Rename.
+	// the module was created, but may have been modified by calls to BottomUpMutatorContext.Rename.
 	ModuleName() string
 
 	// ModuleDir returns the path to the directory that contains the definition of the module.
@@ -226,6 +244,8 @@ type BaseModuleContext interface {
 	// invalidated by future mutators.
 	VisitDirectDeps(visit func(Module))
 
+	VisitDirectDepsProxy(visit func(proxy ModuleProxy))
+
 	// VisitDirectDepsIf calls pred for each direct dependency, and if pred returns true calls visit.  If there are
 	// multiple direct dependencies on the same module pred and visit will be called multiple times on that module and
 	// OtherModuleDependencyTag will return a different tag for each.
@@ -261,6 +281,8 @@ type BaseModuleContext interface {
 	// The Modules passed to the visit function should not be retained outside of the visit function, they may be
 	// invalidated by future mutators.
 	WalkDeps(visit func(Module, Module) bool)
+
+	WalkDepsProxy(visit func(ModuleProxy, ModuleProxy) bool)
 
 	// PrimaryModule returns the first variant of the current module.  Variants of a module are always visited in
 	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from the
@@ -365,6 +387,8 @@ type BaseModuleContext interface {
 	SetProvider(provider AnyProviderKey, value any)
 
 	EarlyGetMissingDependencies() []string
+
+	EqualModules(m1, m2 Module) bool
 
 	base() *baseModuleContext
 }
@@ -511,8 +535,12 @@ type moduleContext struct {
 	handledMissingDeps bool
 }
 
+func (m *baseModuleContext) EqualModules(m1, m2 Module) bool {
+	return getWrappedModule(m1) == getWrappedModule(m2)
+}
+
 func (m *baseModuleContext) OtherModuleName(logicModule Module) string {
-	module := m.context.moduleInfo[logicModule]
+	module := m.context.moduleInfo[getWrappedModule(logicModule)]
 	return module.Name()
 }
 
@@ -544,9 +572,16 @@ func (m *baseModuleContext) OtherModuleErrorf(logicModule Module, format string,
 	})
 }
 
+func getWrappedModule(module Module) Module {
+	if mp, isProxy := module.(ModuleProxy); isProxy {
+		return mp.module
+	}
+	return module
+}
+
 func (m *baseModuleContext) OtherModuleDependencyTag(logicModule Module) DependencyTag {
 	// fast path for calling OtherModuleDependencyTag from inside VisitDirectDeps
-	if m.visitingDep.module != nil && logicModule == m.visitingDep.module.logicModule {
+	if m.visitingDep.module != nil && getWrappedModule(logicModule) == m.visitingDep.module.logicModule {
 		return m.visitingDep.tag
 	}
 
@@ -555,7 +590,7 @@ func (m *baseModuleContext) OtherModuleDependencyTag(logicModule Module) Depende
 	}
 
 	for _, dep := range m.visitingParent.directDeps {
-		if dep.module.logicModule == logicModule {
+		if dep.module.logicModule == getWrappedModule(logicModule) {
 			return dep.tag
 		}
 	}
@@ -613,7 +648,7 @@ func (m *baseModuleContext) OtherModuleReverseDependencyVariantExists(name strin
 }
 
 func (m *baseModuleContext) OtherModuleProvider(logicModule Module, provider AnyProviderKey) (any, bool) {
-	module := m.context.moduleInfo[logicModule]
+	module := m.context.moduleInfo[getWrappedModule(logicModule)]
 	return m.context.provider(module, provider.provider())
 }
 
@@ -752,6 +787,25 @@ func (m *baseModuleContext) VisitDirectDeps(visit func(Module)) {
 	m.visitingDep = depInfo{}
 }
 
+func (m *baseModuleContext) VisitDirectDepsProxy(visit func(proxy ModuleProxy)) {
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitDirectDeps(%s, %s) for dependency %s",
+				m.module, funcName(visit), m.visitingDep.module))
+		}
+	}()
+
+	m.visitingParent = m.module
+
+	for _, dep := range m.module.directDeps {
+		m.visitingDep = dep
+		visit(ModuleProxy{dep.module.logicModule})
+	}
+
+	m.visitingParent = nil
+	m.visitingDep = depInfo{}
+}
+
 func (m *baseModuleContext) VisitDirectDepsIf(pred func(Module) bool, visit func(Module)) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -818,6 +872,17 @@ func (m *baseModuleContext) WalkDeps(visit func(child, parent Module) bool) {
 		m.visitingParent = parent
 		m.visitingDep = dep
 		return visit(dep.module.logicModule, parent.logicModule)
+	}, nil)
+
+	m.visitingParent = nil
+	m.visitingDep = depInfo{}
+}
+
+func (m *baseModuleContext) WalkDepsProxy(visit func(child, parent ModuleProxy) bool) {
+	m.context.walkDeps(m.module, true, func(dep depInfo, parent *moduleInfo) bool {
+		m.visitingParent = parent
+		m.visitingDep = dep
+		return visit(ModuleProxy{dep.module.logicModule}, ModuleProxy{parent.logicModule})
 	}, nil)
 
 	m.visitingParent = nil
@@ -922,43 +987,26 @@ type mutatorContext struct {
 	pauseCh          chan<- pauseSpec
 }
 
-type BaseMutatorContext interface {
-	BaseModuleContext
-
-	// Rename all variants of a module.  The new name is not visible to calls to ModuleName,
-	// AddDependency or OtherModuleName until after this mutator pass is complete.
-	Rename(name string)
-
-	// MutatorName returns the name that this mutator was registered with.
-	MutatorName() string
-
-	// CreateModule creates a new module by calling the factory method for the specified moduleType, and applies
-	// the specified property structs to it as if the properties were set in a blueprint file.
-	CreateModule(ModuleFactory, string, ...interface{}) Module
-}
-
 type TopDownMutatorContext interface {
-	BaseMutatorContext
+	BaseModuleContext
 }
 
 type BottomUpMutatorContext interface {
-	BaseMutatorContext
+	BaseModuleContext
 
 	// AddDependency adds a dependency to the given module.  It returns a slice of modules for each
 	// dependency (some entries may be nil).  Does not affect the ordering of the current mutator
 	// pass, but will be ordered correctly for all future mutator passes.
 	//
-	// If the mutator is parallel (see MutatorHandle.Parallel), this method will pause until the
-	// new dependencies have had the current mutator called on them.  If the mutator is not
-	// parallel this method does not affect the ordering of the current mutator pass, but will
-	// be ordered correctly for all future mutator passes.
+	// This method will pause until the new dependencies have had the current mutator called on them.
 	AddDependency(module Module, tag DependencyTag, name ...string) []Module
 
 	// AddReverseDependency adds a dependency from the destination to the given module.
 	// Does not affect the ordering of the current mutator pass, but will be ordered
 	// correctly for all future mutator passes.  All reverse dependencies for a destination module are
 	// collected until the end of the mutator pass, sorted by name, and then appended to the destination
-	// module's dependency list.
+	// module's dependency list.  May only  be called by mutators that were marked with
+	// UsesReverseDependencies during registration.
 	AddReverseDependency(module Module, tag DependencyTag, name string)
 
 	// AddVariationDependencies adds deps as dependencies of the current module, but uses the variations
@@ -966,20 +1014,19 @@ type BottomUpMutatorContext interface {
 	// each dependency (some entries may be nil).  A variant of the dependency must exist that matches
 	// the all of the non-local variations of the current module, plus the variations argument.
 	//
-	// If the mutator is parallel (see MutatorHandle.Parallel), this method will pause until the
-	// new dependencies have had the current mutator called on them.  If the mutator is not
-	// parallel this method does not affect the ordering of the current mutator pass, but will
-	// be ordered correctly for all future mutator passes.
+	//
+	// This method will pause until the new dependencies have had the current mutator called on them.
 	AddVariationDependencies([]Variation, DependencyTag, ...string) []Module
 
-	// AddReverseVariationDependencies adds a dependency from the named module to the current
+	// AddReverseVariationDependency adds a dependency from the named module to the current
 	// module. The given variations will be added to the current module's varations, and then the
 	// result will be used to find the correct variation of the depending module, which must exist.
 	//
 	// Does not affect the ordering of the current mutator pass, but will be ordered
 	// correctly for all future mutator passes.  All reverse dependencies for a destination module are
 	// collected until the end of the mutator pass, sorted by name, and then appended to the destination
-	// module's dependency list.
+	// module's dependency list.  May only  be called by mutators that were marked with
+	// UsesReverseDependencies during registration.
 	AddReverseVariationDependency([]Variation, DependencyTag, string)
 
 	// AddFarVariationDependencies adds deps as dependencies of the current module, but uses the
@@ -991,22 +1038,32 @@ type BottomUpMutatorContext interface {
 	// Unlike AddVariationDependencies, the variations of the current module are ignored - the
 	// dependency only needs to match the supplied variations.
 	//
-	// If the mutator is parallel (see MutatorHandle.Parallel), this method will pause until the
-	// new dependencies have had the current mutator called on them.  If the mutator is not
-	// parallel this method does not affect the ordering of the current mutator pass, but will
-	// be ordered correctly for all future mutator passes.
+	//
+	// This method will pause until the new dependencies have had the current mutator called on them.
 	AddFarVariationDependencies([]Variation, DependencyTag, ...string) []Module
 
 	// ReplaceDependencies finds all the variants of the module with the specified name, then
 	// replaces all dependencies onto those variants with the current variant of this module.
-	// Replacements don't take effect until after the mutator pass is finished.
+	// Replacements don't take effect until after the mutator pass is finished.  May only
+	// be called by mutators that were marked with UsesReplaceDependencies during registration.
 	ReplaceDependencies(string)
 
 	// ReplaceDependenciesIf finds all the variants of the module with the specified name, then
 	// replaces all dependencies onto those variants with the current variant of this module
 	// as long as the supplied predicate returns true.
-	// Replacements don't take effect until after the mutator pass is finished.
+	// Replacements don't take effect until after the mutator pass is finished.  May only
+	// be called by mutators that were marked with UsesReplaceDependencies during registration.
 	ReplaceDependenciesIf(string, ReplaceDependencyPredicate)
+
+	// Rename all variants of a module.  The new name is not visible to calls to ModuleName,
+	// AddDependency or OtherModuleName until after this mutator pass is complete.  May only be called
+	// by mutators that were marked with UsesRename during registration.
+	Rename(name string)
+
+	// CreateModule creates a new module by calling the factory method for the specified moduleType, and applies
+	// the specified property structs to it as if the properties were set in a blueprint file.  May only
+	// be called by mutators that were marked with UsesCreateModule during registration.
+	CreateModule(ModuleFactory, string, ...interface{}) Module
 }
 
 // A Mutator function is called for each Module, and can modify properties on the modules.
@@ -1033,10 +1090,6 @@ func (BaseDependencyTag) dependencyTag(DependencyTag) {
 }
 
 var _ DependencyTag = BaseDependencyTag{}
-
-func (mctx *mutatorContext) MutatorName() string {
-	return mctx.mutator.name
-}
 
 func (mctx *mutatorContext) createVariationsWithTransition(variationNames []string, outgoingTransitions [][]string) []Module {
 	return mctx.createVariations(variationNames, chooseDepByIndexes(mctx.mutator.name, outgoingTransitions))
@@ -1073,7 +1126,7 @@ func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps
 	depInfos := make([]Module, 0, len(deps))
 	for _, dep := range deps {
 		modInfo := mctx.context.moduleInfo[module]
-		depInfo, errs := mctx.context.addDependency(modInfo, mctx.config, tag, dep)
+		depInfo, errs := mctx.context.addDependency(modInfo, mctx.mutator, mctx.config, tag, dep)
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
@@ -1087,6 +1140,10 @@ func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps
 }
 
 func (mctx *mutatorContext) AddReverseDependency(module Module, tag DependencyTag, destName string) {
+	if !mctx.mutator.usesReverseDependencies {
+		panic(fmt.Errorf("method AddReverseDependency called from mutator that was not marked UsesReverseDependencies"))
+	}
+
 	if _, ok := tag.(BaseDependencyTag); ok {
 		panic("BaseDependencyTag is not allowed to be used directly!")
 	}
@@ -1109,6 +1166,10 @@ func (mctx *mutatorContext) AddReverseDependency(module Module, tag DependencyTa
 }
 
 func (mctx *mutatorContext) AddReverseVariationDependency(variations []Variation, tag DependencyTag, destName string) {
+	if !mctx.mutator.usesReverseDependencies {
+		panic(fmt.Errorf("method AddReverseVariationDependency called from mutator that was not marked UsesReverseDependencies"))
+	}
+
 	if _, ok := tag.(BaseDependencyTag); ok {
 		panic("BaseDependencyTag is not allowed to be used directly!")
 	}
@@ -1135,7 +1196,7 @@ func (mctx *mutatorContext) AddVariationDependencies(variations []Variation, tag
 
 	depInfos := make([]Module, 0, len(deps))
 	for _, dep := range deps {
-		depInfo, errs := mctx.context.addVariationDependency(mctx.module, mctx.config, variations, tag, dep, false)
+		depInfo, errs := mctx.context.addVariationDependency(mctx.module, mctx.mutator, mctx.config, variations, tag, dep, false)
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
@@ -1153,7 +1214,7 @@ func (mctx *mutatorContext) AddFarVariationDependencies(variations []Variation, 
 
 	depInfos := make([]Module, 0, len(deps))
 	for _, dep := range deps {
-		depInfo, errs := mctx.context.addVariationDependency(mctx.module, mctx.config, variations, tag, dep, true)
+		depInfo, errs := mctx.context.addVariationDependency(mctx.module, mctx.mutator, mctx.config, variations, tag, dep, true)
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
@@ -1173,6 +1234,10 @@ func (mctx *mutatorContext) ReplaceDependencies(name string) {
 type ReplaceDependencyPredicate func(from Module, tag DependencyTag, to Module) bool
 
 func (mctx *mutatorContext) ReplaceDependenciesIf(name string, predicate ReplaceDependencyPredicate) {
+	if !mctx.mutator.usesReplaceDependencies {
+		panic(fmt.Errorf("method ReplaceDependenciesIf called from mutator that was not marked UsesReplaceDependencies"))
+	}
+
 	targets := mctx.context.moduleVariantsThatDependOn(name, mctx.module)
 
 	if len(targets) == 0 {
@@ -1189,10 +1254,17 @@ func (mctx *mutatorContext) ReplaceDependenciesIf(name string, predicate Replace
 }
 
 func (mctx *mutatorContext) Rename(name string) {
+	if !mctx.mutator.usesRename {
+		panic(fmt.Errorf("method Rename called from mutator that was not marked UsesRename"))
+	}
 	mctx.rename = append(mctx.rename, rename{mctx.module.group, name})
 }
 
 func (mctx *mutatorContext) CreateModule(factory ModuleFactory, typeName string, props ...interface{}) Module {
+	if !mctx.mutator.usesCreateModule {
+		panic(fmt.Errorf("method CreateModule called from mutator that was not marked UsesCreateModule"))
+	}
+
 	module := newModule(factory)
 
 	module.relBlueprintsFile = mctx.module.relBlueprintsFile

@@ -15,6 +15,8 @@
 package blueprint
 
 import (
+	"bytes"
+	"encoding/gob"
 	"text/scanner"
 )
 
@@ -51,4 +53,33 @@ type IncrementalModule struct{}
 
 func (m *IncrementalModule) IncrementalSupported() bool {
 	return true
+}
+
+type CustomGob[T any] interface {
+	ToGob() *T
+	FromGob(data *T)
+}
+
+func CustomGobEncode[T any](cg CustomGob[T]) ([]byte, error) {
+	w := new(bytes.Buffer)
+	encoder := gob.NewEncoder(w)
+	err := encoder.Encode(cg.ToGob())
+	if err != nil {
+		return nil, err
+	}
+
+	return w.Bytes(), nil
+}
+
+func CustomGobDecode[T any](data []byte, cg CustomGob[T]) error {
+	r := bytes.NewBuffer(data)
+	var value T
+	decoder := gob.NewDecoder(r)
+	err := decoder.Decode(&value)
+	if err != nil {
+		return err
+	}
+	cg.FromGob(&value)
+
+	return nil
 }

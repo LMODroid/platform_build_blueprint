@@ -30,7 +30,7 @@ func testTransitionCommon(bp string, ctxHook func(*Context)) (*Context, []error)
 
 	ctx.RegisterBottomUpMutator("deps", depsMutator)
 	ctx.RegisterTransitionMutator("transition", transitionTestMutator{})
-	ctx.RegisterBottomUpMutator("post_transition_deps", postTransitionDepsMutator)
+	ctx.RegisterBottomUpMutator("post_transition_deps", postTransitionDepsMutator).UsesReverseDependencies()
 
 	ctx.RegisterModuleType("transition_module", newTransitionModule)
 

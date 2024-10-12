@@ -108,7 +108,7 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 	}
 	ctx.EndEvent("list_modules")
 
-	ctx.RegisterBottomUpMutator("bootstrap_deps", BootstrapDeps)
+	ctx.RegisterBottomUpMutator("bootstrap_deps", BootstrapDeps).UsesReverseDependencies()
 	ctx.RegisterSingletonType("bootstrap", newSingletonFactory(), false)
 	if !goModuleTypesAreWrapped {
 		RegisterGoModuleTypes(ctx)

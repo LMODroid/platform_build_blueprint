@@ -113,7 +113,7 @@ func TestAddVariationDependencies(t *testing.T) {
 		ctx.RegisterModuleType("test", newModuleCtxTestModule)
 		results := make(map[string][]Module)
 		depsMutator := addVariantDepsResultMutator(nil, nil, "foo", "bar", results)
-		ctx.RegisterBottomUpMutator("deps", depsMutator).Parallel()
+		ctx.RegisterBottomUpMutator("deps", depsMutator)
 
 		run(ctx)
 
@@ -129,32 +129,12 @@ func TestAddVariationDependencies(t *testing.T) {
 		}
 	})
 
-	t.Run("non-parallel", func(t *testing.T) {
-		ctx := NewContext()
-		ctx.RegisterModuleType("test", newModuleCtxTestModule)
-		results := make(map[string][]Module)
-		depsMutator := addVariantDepsResultMutator(nil, nil, "foo", "bar", results)
-		ctx.RegisterBottomUpMutator("deps", depsMutator)
-		run(ctx)
-
-		foo := ctx.moduleGroupFromName("foo", nil).moduleByVariantName("")
-		bar := ctx.moduleGroupFromName("bar", nil).moduleByVariantName("")
-
-		if g, w := foo.forwardDeps, []*moduleInfo{bar}; !reflect.DeepEqual(g, w) {
-			t.Fatalf("expected foo deps to be %q, got %q", w, g)
-		}
-
-		if g, w := results["foo"], []Module{nil}; !reflect.DeepEqual(g, w) {
-			t.Fatalf("expected AddVariationDependencies return value to be %q, got %q", w, g)
-		}
-	})
-
 	t.Run("missing", func(t *testing.T) {
 		ctx := NewContext()
 		ctx.RegisterModuleType("test", newModuleCtxTestModule)
 		results := make(map[string][]Module)
 		depsMutator := addVariantDepsResultMutator(nil, nil, "foo", "baz", results)
-		ctx.RegisterBottomUpMutator("deps", depsMutator).Parallel()
+		ctx.RegisterBottomUpMutator("deps", depsMutator)
 		runWithFailures(ctx, `"foo" depends on undefined module "baz"`)
 
 		foo := ctx.moduleGroupFromName("foo", nil).moduleByVariantName("")
@@ -174,7 +154,7 @@ func TestAddVariationDependencies(t *testing.T) {
 		ctx.RegisterModuleType("test", newModuleCtxTestModule)
 		results := make(map[string][]Module)
 		depsMutator := addVariantDepsResultMutator(nil, nil, "foo", "baz", results)
-		ctx.RegisterBottomUpMutator("deps", depsMutator).Parallel()
+		ctx.RegisterBottomUpMutator("deps", depsMutator)
 		run(ctx)
 
 		foo := ctx.moduleGroupFromName("foo", nil).moduleByVariantName("")
