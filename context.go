@@ -4784,6 +4784,9 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 		return err
 	}
 	for _, module := range modules {
+		if len(module.actionDefs.variables)+len(module.actionDefs.rules)+len(module.actionDefs.buildDefs) == 0 {
+			continue
+		}
 		moduleFile := filepath.Join(ninjaPath, module.ModuleCacheKey()+".ninja")
 		if !module.incrementalRestored {
 			err := func() error {

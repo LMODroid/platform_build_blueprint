@@ -34,6 +34,7 @@ type testPropStruct struct {
 	My_string_list              []string
 	My_bool                     bool
 	My_int                      int
+	My_int64                    int64
 	Nested                      testPropStructNested
 }
 
@@ -58,6 +59,7 @@ func TestRepack(t *testing.T) {
 				My_string_list:              []string{"foo", "bar"},
 				My_bool:                     true,
 				My_int:                      5,
+				My_int64:                    64,
 				Nested: testPropStructNested{
 					My_string_ptr: StringPtr("baz"),
 				},
@@ -78,6 +80,7 @@ module {
     ],
     my_bool: true,
     my_int: 5,
+    my_int64: 64,
     nested: {
         my_string_ptr: "baz",
     },
@@ -134,6 +137,7 @@ module {
     ],
     my_bool: true,
     my_int: 5,
+    my_int64: 0,
 }`,
 		},
 		{

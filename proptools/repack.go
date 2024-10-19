@@ -121,7 +121,7 @@ func fieldToExpr(field reflect.Value) (*parser.Expression, error) {
 	case reflect.Bool:
 		var result parser.Expression = &parser.Bool{Value: field.Bool()}
 		return &result, nil
-	case reflect.Int:
+	case reflect.Int, reflect.Int64:
 		var result parser.Expression = &parser.Int64{Value: field.Int()}
 		return &result, nil
 	case reflect.Slice:
