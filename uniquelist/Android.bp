@@ -1,0 +1,13 @@
+bootstrap_go_package {
+    name: "blueprint-uniquelist",
+    pkgPath: "github.com/google/blueprint/uniquelist",
+    srcs: [
+        "uniquelist.go",
+    ],
+    testSrcs: [
+        "uniquelist_test.go",
+    ],
+    visibility: [
+        "//build/blueprint/depset",
+    ],
+}

@@ -18,6 +18,7 @@ import (
 	"encoding/gob"
 	"fmt"
 
+	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/proptools"
 )
 
@@ -75,11 +76,11 @@ func (m *providerKey) FromGob(data *providerKeyGob) {
 }
 
 func (m *providerKey) GobEncode() ([]byte, error) {
-	return CustomGobEncode[providerKeyGob](m)
+	return gobtools.CustomGobEncode[providerKeyGob](m)
 }
 
 func (m *providerKey) GobDecode(data []byte) error {
-	return CustomGobDecode[providerKeyGob](data, m)
+	return gobtools.CustomGobDecode[providerKeyGob](data, m)
 }
 
 func (p *providerKey) provider() *providerKey { return p }

@@ -1327,15 +1327,20 @@ type LoadHookContext interface {
 	// the specified property structs to it as if the properties were set in a blueprint file.
 	CreateModule(ModuleFactory, string, ...interface{}) Module
 
+	// CreateModuleInDirectory creates a new module in the specified directory by calling the
+	// factory method for the specified moduleType, and applies the specified property structs
+	// to it as if the properties were set in a blueprint file.
+	CreateModuleInDirectory(ModuleFactory, string, string, ...interface{}) Module
+
 	// RegisterScopedModuleType creates a new module type that is scoped to the current Blueprints
 	// file.
 	RegisterScopedModuleType(name string, factory ModuleFactory)
 }
 
-func (l *loadHookContext) CreateModule(factory ModuleFactory, typeName string, props ...interface{}) Module {
+func (l *loadHookContext) createModule(factory ModuleFactory, typeName, moduleDir string, props ...interface{}) Module {
 	module := newModule(factory)
 
-	module.relBlueprintsFile = l.module.relBlueprintsFile
+	module.relBlueprintsFile = moduleDir
 	module.pos = l.module.pos
 	module.propertyPos = l.module.propertyPos
 	module.createdBy = l.module
@@ -1351,6 +1356,19 @@ func (l *loadHookContext) CreateModule(factory ModuleFactory, typeName string, p
 	l.newModules = append(l.newModules, module)
 
 	return module.logicModule
+}
+
+func (l *loadHookContext) CreateModule(factory ModuleFactory, typeName string, props ...interface{}) Module {
+	return l.createModule(factory, typeName, l.module.relBlueprintsFile, props...)
+}
+
+func (l *loadHookContext) CreateModuleInDirectory(factory ModuleFactory, typeName, moduleDir string, props ...interface{}) Module {
+	if moduleDir != filepath.Clean(moduleDir) {
+		panic(fmt.Errorf("Cannot create a module in %s", moduleDir))
+	}
+
+	filePath := filepath.Join(moduleDir, "Android.bp")
+	return l.createModule(factory, typeName, filePath, props...)
 }
 
 func (l *loadHookContext) RegisterScopedModuleType(name string, factory ModuleFactory) {
