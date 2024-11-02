@@ -357,6 +357,38 @@ func TestPostTransitionReverseDepsErrorOnMissingDep(t *testing.T) {
 	assertOneErrorMatches(t, errs, `reverse dependency "A" of "B" missing variant:\s*transition:b\s*available variants:\s*transition:a`)
 }
 
+func TestErrorInIncomingTransition(t *testing.T) {
+	_, errs := testTransition(`
+		transition_module {
+			name: "A",
+			split: ["a"],
+			deps: ["B"],
+		}
+		transition_module {
+			name: "B",
+			split: ["a"],
+			incoming_transition_error: "my incoming transition error",
+		}
+	`)
+	assertOneErrorMatches(t, errs, "my incoming transition error")
+}
+
+func TestErrorInOutgoingTransition(t *testing.T) {
+	_, errs := testTransition(`
+		transition_module {
+			name: "A",
+			split: ["a"],
+			deps: ["B"],
+			outgoing_transition_error: "my outgoing transition error",
+		}
+		transition_module {
+			name: "B",
+			split: ["a"],
+		}
+	`)
+	assertOneErrorMatches(t, errs, "my outgoing transition error")
+}
+
 func TestPostTransitionReverseDepsAllowMissingDeps(t *testing.T) {
 	_, errs := testTransitionAllowMissingDeps(`
 		transition_module {
@@ -428,6 +460,9 @@ func (transitionTestMutator) Split(ctx BaseModuleContext) []string {
 }
 
 func (transitionTestMutator) OutgoingTransition(ctx OutgoingTransitionContext, sourceVariation string) string {
+	if err := ctx.Module().(*transitionModule).properties.Outgoing_transition_error; err != nil {
+		ctx.ModuleErrorf("Error: %s", *err)
+	}
 	if outgoing := ctx.Module().(*transitionModule).properties.Outgoing; outgoing != nil {
 		return *outgoing
 	}
@@ -435,7 +470,9 @@ func (transitionTestMutator) OutgoingTransition(ctx OutgoingTransitionContext, s
 }
 
 func (transitionTestMutator) IncomingTransition(ctx IncomingTransitionContext, incomingVariation string) string {
-
+	if err := ctx.Module().(*transitionModule).properties.Incoming_transition_error; err != nil {
+		ctx.ModuleErrorf("Error: %s", *err)
+	}
 	if ctx.IsAddingDependency() {
 		if incoming := ctx.Module().(*transitionModule).properties.Post_transition_incoming; incoming != nil {
 			return *incoming
@@ -462,6 +499,8 @@ type transitionModule struct {
 		Outgoing                               *string
 		Incoming                               *string
 		Post_transition_incoming               *string
+		Outgoing_transition_error              *string
+		Incoming_transition_error              *string
 
 		Mutated string `blueprint:"mutated"`
 	}
