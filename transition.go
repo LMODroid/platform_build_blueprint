@@ -341,12 +341,32 @@ func (t *transitionMutatorImpl) mutateMutator(mctx BottomUpMutatorContext) {
 	t.mutator.Mutate(mctx, currentVariation)
 }
 
-func (c *Context) RegisterTransitionMutator(name string, mutator TransitionMutator) {
+type TransitionMutatorHandle interface {
+	// NeverFar causes the variations created by this mutator to never be ignored when adding
+	// far variation dependencies. Normally, far variation dependencies ignore all the variants
+	// of the source module, and only use the variants explicitly requested by the
+	// AddFarVariationDependencies call.
+	NeverFar() TransitionMutatorHandle
+}
+
+type transitionMutatorHandle struct {
+	inner MutatorHandle
+}
+
+var _ TransitionMutatorHandle = (*transitionMutatorHandle)(nil)
+
+func (h *transitionMutatorHandle) NeverFar() TransitionMutatorHandle {
+	h.inner.setNeverFar()
+	return h
+}
+
+func (c *Context) RegisterTransitionMutator(name string, mutator TransitionMutator) TransitionMutatorHandle {
 	impl := &transitionMutatorImpl{name: name, mutator: mutator}
 
 	c.RegisterTopDownMutator(name+"_propagate", impl.topDownMutator)
-	c.RegisterBottomUpMutator(name, impl.bottomUpMutator).setTransitionMutator(impl)
+	bottomUpHandle := c.RegisterBottomUpMutator(name, impl.bottomUpMutator).setTransitionMutator(impl)
 	c.RegisterBottomUpMutator(name+"_mutate", impl.mutateMutator)
+	return &transitionMutatorHandle{inner: bottomUpHandle}
 }
 
 // This function is called for every dependency edge to determine which

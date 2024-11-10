@@ -297,9 +297,15 @@ type BaseModuleContext interface {
 	// singleton actions that are only done once for all variants of a module.
 	FinalModule() Module
 
+	// IsFinalModule returns if the current module is the last variant.  Variants of a module are always visited in
+	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from all
+	// variants using VisitAllModuleVariants if the current module is the last one.  This can be used to perform
+	// singleton actions that are only done once for all variants of a module.
+	IsFinalModule(module Module) bool
+
 	// VisitAllModuleVariants calls visit for each variant of the current module.  Variants of a module are always
 	// visited in order by mutators and GenerateBuildActions, so the data created by the current mutator can be read
-	// from all variants if the current module == FinalModule().  Otherwise, care must be taken to not access any
+	// from all variants if the current module is the last one.  Otherwise, care must be taken to not access any
 	// data modified by the current mutator.
 	VisitAllModuleVariants(visit func(Module))
 
@@ -909,6 +915,10 @@ func (m *baseModuleContext) PrimaryModule() Module {
 
 func (m *baseModuleContext) FinalModule() Module {
 	return m.module.group.modules.lastModule().logicModule
+}
+
+func (m *baseModuleContext) IsFinalModule(module Module) bool {
+	return m.module.group.modules.lastModule().logicModule == module
 }
 
 func (m *baseModuleContext) VisitAllModuleVariants(visit func(Module)) {

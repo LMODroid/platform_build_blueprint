@@ -1438,7 +1438,7 @@ func incrementalSetup(t *testing.T) *Context {
 	return ctx
 }
 
-func incrementalSetupForRestore(t *testing.T, orderOnlyStrings *[]string) (*Context, any) {
+func incrementalSetupForRestore(t *testing.T, orderOnlyStrings []string) (*Context, any) {
 	ctx := incrementalSetup(t)
 	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
 	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
@@ -1591,7 +1591,7 @@ func TestSkipNinjaForCacheHit(t *testing.T) {
 		t.Errorf("ninja file doesn't have build statements for MyBarModule: %s", string(content))
 	}
 
-	file, err = ctx.fs.Open("test_ninja_incremental/.-MyIncrementalModule-none-incremental_module.ninja")
+	file, err = ctx.fs.Open("test_incremental_ninja/.-MyIncrementalModule-none-incremental_module.ninja")
 	if !os.IsNotExist(err) {
 		t.Errorf("shouldn't generate ninja file for MyIncrementalModule: %s", err.Error())
 	}
@@ -1625,7 +1625,7 @@ func TestNotSkipNinjaForCacheMiss(t *testing.T) {
 		t.Errorf("ninja file doesn't have build statements for MyBarModule: %s", string(content))
 	}
 
-	file, err = ctx.fs.Open("test_ninja_incremental/.-MyIncrementalModule-none-incremental_module.ninja")
+	file, err = ctx.fs.Open("test_incremental_ninja/.-MyIncrementalModule-none-incremental_module.ninja")
 	if err != nil {
 		t.Errorf("no ninja file for MyIncrementalModule")
 	}
@@ -1665,7 +1665,7 @@ func TestOrderOnlyStringsCaching(t *testing.T) {
 func TestOrderOnlyStringsRestoring(t *testing.T) {
 	phony := "dedup-d479e9a8133ff998"
 	orderOnlyStrings := []string{phony}
-	ctx, _ := incrementalSetupForRestore(t, &orderOnlyStrings)
+	ctx, _ := incrementalSetupForRestore(t, orderOnlyStrings)
 	ctx.orderOnlyStringsFromCache = make(OrderOnlyStringsCache)
 	ctx.orderOnlyStringsFromCache[phony] = []string{"test.lib"}
 	_, errs := ctx.PrepareBuildActions(nil)
@@ -1708,8 +1708,8 @@ func verifyOrderOnlyStringsCache(t *testing.T, ctx *Context, incInfo, barInfo *m
 	if cache == nil {
 		t.Errorf("failed to find cached build actions for the incremental module")
 	}
-	if !listContainsValue(*cache.OrderOnlyStrings, key) {
-		t.Errorf("no order only strings cached for MyIncrementalModule: %v", *cache.OrderOnlyStrings)
+	if !listContainsValue(cache.OrderOnlyStrings, key) {
+		t.Errorf("no order only strings cached for MyIncrementalModule: %v", cache.OrderOnlyStrings)
 	}
 }
 

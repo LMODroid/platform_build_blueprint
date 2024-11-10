@@ -35,10 +35,10 @@ func RepackProperties(props []interface{}) (*parser.Map, error) {
 		dereferencedProps = append(dereferencedProps, propStruct)
 	}
 
-	return repackStruct(dereferencedProps)
+	return repackStructs(dereferencedProps)
 }
 
-func repackStruct(props []reflect.Value) (*parser.Map, error) {
+func repackStructs(props []reflect.Value) (*parser.Map, error) {
 	var allFieldNames []string
 	for _, prop := range props {
 		propType := prop.Type()
@@ -76,7 +76,7 @@ func repackStruct(props []reflect.Value) (*parser.Map, error) {
 			continue
 		}
 		if isStruct(field.Type()) && !isConfigurable(field.Type()) {
-			x, err := repackStruct(fields)
+			x, err := repackStructs(fields)
 			if err != nil {
 				return nil, err
 			}
@@ -134,6 +134,21 @@ func fieldToExpr(field reflect.Value) (*parser.Expression, error) {
 			contents = append(contents, *inner)
 		}
 		var result parser.Expression = &parser.List{Values: contents}
+		return &result, nil
+	case reflect.Struct:
+		var properties []*parser.Property
+		typ := field.Type()
+		for i := 0; i < typ.NumField(); i++ {
+			inner, err := fieldToExpr(field.Field(i))
+			if err != nil {
+				return nil, err
+			}
+			properties = append(properties, &parser.Property{
+				Name:  typ.Field(i).Name,
+				Value: *inner,
+			})
+		}
+		var result parser.Expression = &parser.Map{Properties: properties}
 		return &result, nil
 	default:
 		return nil, fmt.Errorf("Unhandled type: %s", field.Kind().String())

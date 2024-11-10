@@ -385,7 +385,7 @@ type moduleInfo struct {
 type incrementalInfo struct {
 	incrementalRestored bool
 	buildActionCacheKey *BuildActionCacheKey
-	orderOnlyStrings    *[]string
+	orderOnlyStrings    []string
 }
 
 type variant struct {
@@ -548,6 +548,7 @@ type mutatorInfo struct {
 	usesCreateModule        bool
 	mutatesDependencies     bool
 	mutatesGlobalState      bool
+	neverFar                bool
 }
 
 func newContext() *Context {
@@ -878,6 +879,7 @@ type MutatorHandle interface {
 	MutatesGlobalState() MutatorHandle
 
 	setTransitionMutator(impl *transitionMutatorImpl) MutatorHandle
+	setNeverFar() MutatorHandle
 }
 
 func (mutator *mutatorInfo) UsesRename() MutatorHandle {
@@ -912,6 +914,11 @@ func (mutator *mutatorInfo) MutatesGlobalState() MutatorHandle {
 
 func (mutator *mutatorInfo) setTransitionMutator(impl *transitionMutatorImpl) MutatorHandle {
 	mutator.transitionMutator = impl
+	return mutator
+}
+
+func (mutator *mutatorInfo) setNeverFar() MutatorHandle {
+	mutator.neverFar = true
 	return mutator
 }
 
@@ -2080,6 +2087,12 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 	var newVariant variationMap
 	if !far {
 		newVariant = module.variant.variations.clone()
+	} else {
+		for _, mutator := range c.mutatorInfo {
+			if mutator.neverFar {
+				newVariant.set(mutator.name, module.variant.variations.get(mutator.name))
+			}
+		}
 	}
 	for _, v := range requestedVariations {
 		newVariant.set(v.Mutator, v.Variation)
@@ -4137,8 +4150,8 @@ func (c *Context) PrimaryModule(module Module) Module {
 	return c.moduleInfo[module].group.modules.firstModule().logicModule
 }
 
-func (c *Context) FinalModule(module Module) Module {
-	return c.moduleInfo[module].group.modules.lastModule().logicModule
+func (c *Context) IsFinalModule(module Module) bool {
+	return c.moduleInfo[module].group.modules.lastModule().logicModule == module
 }
 
 func (c *Context) VisitAllModuleVariants(module Module,
@@ -4563,6 +4576,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 		modules = append(modules, module)
 	}
 	sort.Sort(moduleSorter{modules, c.nameInterface})
+	sort.Sort(moduleSorter{incrementalModules, c.nameInterface})
 
 	phonys := c.deduplicateOrderOnlyDeps(append(modules, incrementalModules...))
 	if err := orderOnlyForIncremental(c, incrementalModules, phonys); err != nil {
@@ -4624,7 +4638,9 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 		}
 
 		if c.GetIncrementalEnabled() {
-			file := fmt.Sprintf("%s.incremental", ninjaFileName)
+			suffix := ".ninja"
+			base := strings.TrimSuffix(ninjaFileName, suffix)
+			file := fmt.Sprintf("%s.incremental%s", base, suffix)
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -4658,11 +4674,10 @@ func orderOnlyForIncremental(c *Context, modules []*moduleInfo, phonys *localBui
 	for _, mod := range modules {
 		// find the order only strings of the incremental module, it can come from
 		// the cache or from buildDefs depending on if the module was skipped or not.
-		var orderOnlyStrings *[]string
+		var orderOnlyStrings []string
 		if mod.incrementalRestored {
 			orderOnlyStrings = mod.orderOnlyStrings
 		} else {
-			orderOnlyStrings = new([]string)
 			for _, b := range mod.actionDefs.buildDefs {
 				// We do similar check when creating phonys in deduplicateOrderOnlyDeps as well
 				if len(b.OrderOnly) > 0 {
@@ -4670,13 +4685,13 @@ func orderOnlyForIncremental(c *Context, modules []*moduleInfo, phonys *localBui
 				}
 				for _, str := range b.OrderOnlyStrings {
 					if strings.HasPrefix(str, "dedup-") {
-						*orderOnlyStrings = append(*orderOnlyStrings, str)
+						orderOnlyStrings = append(orderOnlyStrings, str)
 					}
 				}
 			}
 		}
 
-		if orderOnlyStrings == nil || len(*orderOnlyStrings) == 0 {
+		if len(orderOnlyStrings) == 0 {
 			continue
 		}
 
@@ -4698,7 +4713,7 @@ func orderOnlyForIncremental(c *Context, modules []*moduleInfo, phonys *localBui
 		// in the phony list anymore, so we need to add it here in order to avoid
 		// writing the ninja statements for the skipped module, otherwise it would
 		// reference a dedup-* phony that no longer exists.
-		for _, dep := range *orderOnlyStrings {
+		for _, dep := range orderOnlyStrings {
 			// nothing changed to this phony, the cached value is still valid
 			if _, ok := c.orderOnlyStringsToCache[dep]; ok {
 				continue
@@ -4734,9 +4749,6 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 		return err
 	}
 	for _, module := range modules {
-		if len(module.actionDefs.variables)+len(module.actionDefs.rules)+len(module.actionDefs.buildDefs) == 0 {
-			continue
-		}
 		moduleFile := filepath.Join(ninjaPath, module.ModuleCacheKey()+".ninja")
 		if !module.incrementalRestored {
 			err := func() error {

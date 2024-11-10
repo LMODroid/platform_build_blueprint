@@ -22,6 +22,11 @@ import (
 	"github.com/google/blueprint/parser"
 )
 
+type testSymlinkStruct struct {
+	Target string
+	Name   string
+}
+
 type testPropStructNested struct {
 	My_string_ptr *string
 }
@@ -32,6 +37,7 @@ type testPropStruct struct {
 	My_configurable_string_list Configurable[[]string]
 	My_string_ptr               *string
 	My_string_list              []string
+	My_struct_list              []testSymlinkStruct
 	My_bool                     bool
 	My_int                      int
 	My_int64                    int64
@@ -57,9 +63,13 @@ func TestRepack(t *testing.T) {
 				My_configurable_string_list: NewSimpleConfigurable([]string{"a", "b", "c"}),
 				My_string_ptr:               StringPtr("bar"),
 				My_string_list:              []string{"foo", "bar"},
-				My_bool:                     true,
-				My_int:                      5,
-				My_int64:                    64,
+				My_struct_list: []testSymlinkStruct{
+					{Name: "foo", Target: "foo_target"},
+					{Name: "bar", Target: "bar_target"},
+				},
+				My_bool:  true,
+				My_int:   5,
+				My_int64: 64,
 				Nested: testPropStructNested{
 					My_string_ptr: StringPtr("baz"),
 				},
@@ -77,6 +87,16 @@ module {
     my_string_list: [
         "foo",
         "bar",
+    ],
+    my_struct_list: [
+        {
+            Target: "foo_target",
+            Name: "foo",
+        },
+        {
+            Target: "bar_target",
+            Name: "bar",
+        },
     ],
     my_bool: true,
     my_int: 5,
@@ -135,6 +155,7 @@ module {
         "foo",
         "bar",
     ],
+    my_struct_list: [],
     my_bool: true,
     my_int: 5,
     my_int64: 0,

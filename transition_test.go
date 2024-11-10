@@ -22,14 +22,17 @@ import (
 	"testing"
 )
 
-func testTransitionCommon(bp string, ctxHook func(*Context)) (*Context, []error) {
+func testTransitionCommon(bp string, neverFar bool, ctxHook func(*Context)) (*Context, []error) {
 	ctx := newContext()
 	ctx.MockFileSystem(map[string][]byte{
 		"Android.bp": []byte(bp),
 	})
 
 	ctx.RegisterBottomUpMutator("deps", depsMutator)
-	ctx.RegisterTransitionMutator("transition", transitionTestMutator{})
+	handle := ctx.RegisterTransitionMutator("transition", transitionTestMutator{})
+	if neverFar {
+		handle.NeverFar()
+	}
 	ctx.RegisterBottomUpMutator("post_transition_deps", postTransitionDepsMutator).UsesReverseDependencies()
 
 	ctx.RegisterModuleType("transition_module", newTransitionModule)
@@ -52,11 +55,15 @@ func testTransitionCommon(bp string, ctxHook func(*Context)) (*Context, []error)
 }
 
 func testTransition(bp string) (*Context, []error) {
-	return testTransitionCommon(bp, nil)
+	return testTransitionCommon(bp, false, nil)
+}
+
+func testTransitionNeverFar(bp string) (*Context, []error) {
+	return testTransitionCommon(bp, true, nil)
 }
 
 func testTransitionAllowMissingDeps(bp string) (*Context, []error) {
-	return testTransitionCommon(bp, func(ctx *Context) {
+	return testTransitionCommon(bp, false, func(ctx *Context) {
 		ctx.SetAllowMissingDependencies(true)
 	})
 }
@@ -341,6 +348,70 @@ func TestPostTransitionReverseVariationDeps(t *testing.T) {
 	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "B", "b"))
 }
 
+func TestFarVariationDep(t *testing.T) {
+	ctx, errs := testTransition(`
+		transition_module {
+			name: "A",
+			split: ["a"],
+			deps: ["B"],
+		}
+		transition_module {
+			name: "B",
+			split: ["", "a"],
+		}
+		transition_module {
+			name: "C",
+			split: ["c"],
+			post_transition_far_deps: ["D"],
+		}
+		transition_module {
+			name: "D",
+			split: ["", "c"],
+		}
+	`)
+	assertNoErrors(t, errs)
+
+	checkTransitionVariants(t, ctx, "A", []string{"a"})
+	checkTransitionVariants(t, ctx, "B", []string{"", "a"})
+	checkTransitionVariants(t, ctx, "C", []string{"c"})
+	checkTransitionVariants(t, ctx, "D", []string{"", "c"})
+
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "A", "a"), "B(a)")
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "C", "c"), "D()")
+}
+
+func TestNeverFarFarVariationDep(t *testing.T) {
+	ctx, errs := testTransitionNeverFar(`
+		transition_module {
+			name: "A",
+			split: ["a"],
+			deps: ["B"],
+		}
+		transition_module {
+			name: "B",
+			split: ["", "a"],
+		}
+		transition_module {
+			name: "C",
+			split: ["c"],
+			post_transition_far_deps: ["D"],
+		}
+		transition_module {
+			name: "D",
+			split: ["", "c"],
+		}
+	`)
+	assertNoErrors(t, errs)
+
+	checkTransitionVariants(t, ctx, "A", []string{"a"})
+	checkTransitionVariants(t, ctx, "B", []string{"", "a"})
+	checkTransitionVariants(t, ctx, "C", []string{"c"})
+	checkTransitionVariants(t, ctx, "D", []string{"", "c"})
+
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "A", "a"), "B(a)")
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "C", "c"), "D(c)")
+}
+
 func TestPostTransitionReverseDepsErrorOnMissingDep(t *testing.T) {
 	_, errs := testTransition(`
 		transition_module {
@@ -493,6 +564,7 @@ type transitionModule struct {
 	properties struct {
 		Deps                                   []string
 		Post_transition_deps                   []string
+		Post_transition_far_deps               []string
 		Post_transition_reverse_deps           []string
 		Post_transition_reverse_variation_deps []string
 		Split                                  []string
@@ -533,6 +605,9 @@ func postTransitionDepsMutator(mctx BottomUpMutatorContext) {
 				variations = append(variations, Variation{"transition", variation})
 			}
 			mctx.AddVariationDependencies(variations, walkerDepsTag{follow: true}, module)
+		}
+		for _, dep := range m.properties.Post_transition_far_deps {
+			mctx.AddFarVariationDependencies(nil, walkerDepsTag{follow: true}, dep)
 		}
 		for _, dep := range m.properties.Post_transition_reverse_deps {
 			mctx.AddReverseDependency(m, walkerDepsTag{follow: true}, dep)

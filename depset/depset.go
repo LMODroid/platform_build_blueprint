@@ -111,8 +111,8 @@ func (d *DepSet[T]) FromGob(data *depSetGob[T]) {
 	}
 }
 
-func (d *DepSet[T]) GobEncode() ([]byte, error) {
-	return gobtools.CustomGobEncode[depSetGob[T]](d)
+func (d DepSet[T]) GobEncode() ([]byte, error) {
+	return gobtools.CustomGobEncode[depSetGob[T]](&d)
 }
 
 func (d *DepSet[T]) GobDecode(data []byte) error {
