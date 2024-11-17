@@ -309,6 +309,12 @@ type BaseModuleContext interface {
 	// data modified by the current mutator.
 	VisitAllModuleVariants(visit func(Module))
 
+	// VisitAllModuleVariantProxies calls visit for each variant of the current module.  Variants of a module are always
+	// visited in order by mutators and GenerateBuildActions, so the data created by the current mutator can be read
+	// from all variants if the current module is the last one.  Otherwise, care must be taken to not access any
+	// data modified by the current mutator.
+	VisitAllModuleVariantProxies(visit func(proxy ModuleProxy))
+
 	// OtherModuleName returns the name of another Module.  See BaseModuleContext.ModuleName for more information.
 	// It is intended for use inside the visit functions of Visit* and WalkDeps.
 	OtherModuleName(m Module) string
@@ -316,11 +322,6 @@ type BaseModuleContext interface {
 	// OtherModuleDir returns the directory of another Module.  See BaseModuleContext.ModuleDir for more information.
 	// It is intended for use inside the visit functions of Visit* and WalkDeps.
 	OtherModuleDir(m Module) string
-
-	// OtherModuleSubDir returns the unique subdirectory name of another Module.  See ModuleContext.ModuleSubDir for
-	// more information.
-	// It is intended for use inside the visit functions of Visit* and WalkDeps.
-	OtherModuleSubDir(m Module) string
 
 	// OtherModuleType returns the type of another Module.  See BaseModuleContext.ModuleType for more information.
 	// It is intended for use inside the visit functions of Visit* and WalkDeps.
@@ -501,7 +502,7 @@ func (d *baseModuleContext) Errorf(pos scanner.Position,
 func (d *baseModuleContext) ModuleErrorf(format string,
 	args ...interface{}) {
 
-	d.error(d.context.ModuleErrorf(d.module.logicModule, format, args...))
+	d.error(d.context.moduleErrorf(d.module, format, args...))
 }
 
 func (d *baseModuleContext) PropertyErrorf(property, format string,
@@ -556,24 +557,19 @@ func (m *baseModuleContext) OtherModuleName(logicModule Module) string {
 }
 
 func (m *baseModuleContext) OtherModuleDir(logicModule Module) string {
-	module := m.context.moduleInfo[logicModule]
+	module := m.context.moduleInfo[getWrappedModule(logicModule)]
 	return filepath.Dir(module.relBlueprintsFile)
 }
 
-func (m *baseModuleContext) OtherModuleSubDir(logicModule Module) string {
-	module := m.context.moduleInfo[logicModule]
-	return module.variant.name
-}
-
 func (m *baseModuleContext) OtherModuleType(logicModule Module) string {
-	module := m.context.moduleInfo[logicModule]
+	module := m.context.moduleInfo[getWrappedModule(logicModule)]
 	return module.typeName
 }
 
 func (m *baseModuleContext) OtherModuleErrorf(logicModule Module, format string,
 	args ...interface{}) {
 
-	module := m.context.moduleInfo[logicModule]
+	module := m.context.moduleInfo[getWrappedModule(logicModule)]
 	m.errs = append(m.errs, &ModuleError{
 		BlueprintError: BlueprintError{
 			Err: fmt.Errorf(format, args...),
@@ -923,6 +919,10 @@ func (m *baseModuleContext) IsFinalModule(module Module) bool {
 
 func (m *baseModuleContext) VisitAllModuleVariants(visit func(Module)) {
 	m.context.visitAllModuleVariants(m.module, visit)
+}
+
+func (m *baseModuleContext) VisitAllModuleVariantProxies(visit func(proxy ModuleProxy)) {
+	m.context.visitAllModuleVariants(m.module, visitProxyAdaptor(visit))
 }
 
 func (m *baseModuleContext) AddNinjaFileDeps(deps ...string) {

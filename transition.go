@@ -253,7 +253,7 @@ func (c *transitionContextImpl) error(err error) {
 }
 
 func (c *transitionContextImpl) ModuleErrorf(fmt string, args ...interface{}) {
-	c.error(c.context.ModuleErrorf(c.dep.logicModule, fmt, args...))
+	c.error(c.context.moduleErrorf(c.dep, fmt, args...))
 }
 
 func (c *transitionContextImpl) PropertyErrorf(property, fmt string, args ...interface{}) {
