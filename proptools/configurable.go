@@ -128,6 +128,7 @@ const (
 	configurableValueTypeString configurableValueType = iota
 	configurableValueTypeBool
 	configurableValueTypeUndefined
+	configurableValueTypeStringList
 )
 
 func (v *configurableValueType) patternType() configurablePatternType {
@@ -136,6 +137,8 @@ func (v *configurableValueType) patternType() configurablePatternType {
 		return configurablePatternTypeString
 	case configurableValueTypeBool:
 		return configurablePatternTypeBool
+	case configurableValueTypeStringList:
+		return configurablePatternTypeStringList
 	default:
 		panic("unimplemented")
 	}
@@ -147,6 +150,8 @@ func (v *configurableValueType) String() string {
 		return "string"
 	case configurableValueTypeBool:
 		return "bool"
+	case configurableValueTypeStringList:
+		return "string_list"
 	case configurableValueTypeUndefined:
 		return "undefined"
 	default:
@@ -157,9 +162,10 @@ func (v *configurableValueType) String() string {
 // ConfigurableValue represents the value of a certain condition being selected on.
 // This type mostly exists to act as a sum type between string, bool, and undefined.
 type ConfigurableValue struct {
-	typ         configurableValueType
-	stringValue string
-	boolValue   bool
+	typ             configurableValueType
+	stringValue     string
+	boolValue       bool
+	stringListValue []string
 }
 
 func (c *ConfigurableValue) toExpression() parser.Expression {
@@ -168,6 +174,12 @@ func (c *ConfigurableValue) toExpression() parser.Expression {
 		return &parser.Bool{Value: c.boolValue}
 	case configurableValueTypeString:
 		return &parser.String{Value: c.stringValue}
+	case configurableValueTypeStringList:
+		result := &parser.List{}
+		for _, s := range c.stringListValue {
+			result.Values = append(result.Values, &parser.String{Value: s})
+		}
+		return result
 	default:
 		panic(fmt.Sprintf("Unhandled configurableValueType: %s", c.typ.String()))
 	}
@@ -204,6 +216,13 @@ func ConfigurableValueBool(b bool) ConfigurableValue {
 	}
 }
 
+func ConfigurableValueStringList(l []string) ConfigurableValue {
+	return ConfigurableValue{
+		typ:             configurableValueTypeStringList,
+		stringListValue: slices.Clone(l),
+	}
+}
+
 func ConfigurableValueUndefined() ConfigurableValue {
 	return ConfigurableValue{
 		typ: configurableValueTypeUndefined,
@@ -215,6 +234,7 @@ type configurablePatternType int
 const (
 	configurablePatternTypeString configurablePatternType = iota
 	configurablePatternTypeBool
+	configurablePatternTypeStringList
 	configurablePatternTypeDefault
 	configurablePatternTypeAny
 )
@@ -225,6 +245,8 @@ func (v *configurablePatternType) String() string {
 		return "string"
 	case configurablePatternTypeBool:
 		return "bool"
+	case configurablePatternTypeStringList:
+		return "string_list"
 	case configurablePatternTypeDefault:
 		return "default"
 	case configurablePatternTypeAny:
