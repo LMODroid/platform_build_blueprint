@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"text/scanner"
@@ -1423,6 +1424,14 @@ type loadHookContext struct {
 
 type LoadHook func(ctx LoadHookContext)
 
+// LoadHookWithPriority is a wrapper around LoadHook and allows hooks to be sorted by priority.
+// hooks with higher value of `priority` run last.
+// hooks with equal value of `priority` run in the order they were registered.
+type LoadHookWithPriority struct {
+	priority int
+	loadHook LoadHook
+}
+
 // Load hooks need to be added by module factories, which don't have any parameter to get to the
 // Context, and only produce a Module interface with no base implementation, so the load hooks
 // must be stored in a global map.  The key is a pointer allocated by the module factory, so there
@@ -1432,21 +1441,32 @@ type LoadHook func(ctx LoadHookContext)
 var pendingHooks sync.Map
 
 func AddLoadHook(module Module, hook LoadHook) {
+	// default priority is 0
+	AddLoadHookWithPriority(module, hook, 0)
+}
+
+// AddLoadhHookWithPriority adds a load hook with a specified priority.
+// Hooks with higher priority run last.
+// Hooks with equal priority run in the order they were registered.
+func AddLoadHookWithPriority(module Module, hook LoadHook, priority int) {
 	// Only one goroutine can be processing a given module, so no additional locking is required
 	// for the slice stored in the sync.Map.
 	v, exists := pendingHooks.Load(module)
 	if !exists {
-		v, _ = pendingHooks.LoadOrStore(module, new([]LoadHook))
+		v, _ = pendingHooks.LoadOrStore(module, new([]LoadHookWithPriority))
 	}
-	hooks := v.(*[]LoadHook)
-	*hooks = append(*hooks, hook)
+	hooks := v.(*[]LoadHookWithPriority)
+	*hooks = append(*hooks, LoadHookWithPriority{priority, hook})
 }
 
 func runAndRemoveLoadHooks(ctx *Context, config interface{}, module *moduleInfo,
 	scopedModuleFactories *map[string]ModuleFactory) (newModules []*moduleInfo, deps []string, errs []error) {
 
 	if v, exists := pendingHooks.Load(module.logicModule); exists {
-		hooks := v.(*[]LoadHook)
+		hooks := v.(*[]LoadHookWithPriority)
+		// Sort the hooks by priority.
+		// Use SliceStable so that hooks with equal priority run in the order they were registered.
+		sort.SliceStable(*hooks, func(i, j int) bool { return (*hooks)[i].priority < (*hooks)[j].priority })
 
 		for _, hook := range *hooks {
 			mctx := &loadHookContext{
@@ -1457,7 +1477,7 @@ func runAndRemoveLoadHooks(ctx *Context, config interface{}, module *moduleInfo,
 				},
 				scopedModuleFactories: scopedModuleFactories,
 			}
-			hook(mctx)
+			hook.loadHook(mctx)
 			newModules = append(newModules, mctx.newModules...)
 			deps = append(deps, mctx.ninjaFileDeps...)
 			errs = append(errs, mctx.errs...)

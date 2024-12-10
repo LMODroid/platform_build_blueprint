@@ -197,19 +197,19 @@ func (s *singletonContext) Name() string {
 }
 
 func (s *singletonContext) ModuleName(logicModule Module) string {
-	return s.context.ModuleName(logicModule)
+	return s.context.ModuleName(getWrappedModule(logicModule))
 }
 
 func (s *singletonContext) ModuleDir(logicModule Module) string {
-	return s.context.ModuleDir(logicModule)
+	return s.context.ModuleDir(getWrappedModule(logicModule))
 }
 
 func (s *singletonContext) ModuleSubDir(logicModule Module) string {
-	return s.context.ModuleSubDir(logicModule)
+	return s.context.ModuleSubDir(getWrappedModule(logicModule))
 }
 
 func (s *singletonContext) ModuleType(logicModule Module) string {
-	return s.context.ModuleType(logicModule)
+	return s.context.ModuleType(getWrappedModule(logicModule))
 }
 
 func (s *singletonContext) ModuleProvider(logicModule Module, provider AnyProviderKey) (any, bool) {
