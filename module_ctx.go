@@ -106,6 +106,8 @@ type Module interface {
 	// during its generate phase.  This call should generate all Ninja build
 	// actions (rules, pools, and build statements) needed to build the module.
 	GenerateBuildActions(ModuleContext)
+
+	String() string
 }
 
 type ModuleProxy struct {
@@ -117,11 +119,13 @@ func CreateModuleProxy(module Module) ModuleProxy {
 		module: module,
 	}
 }
-
 func (m ModuleProxy) Name() string {
 	return m.module.Name()
 }
 
+func (m ModuleProxy) String() string {
+	return m.module.String()
+}
 func (m ModuleProxy) GenerateBuildActions(context ModuleContext) {
 	m.module.GenerateBuildActions(context)
 }
@@ -1345,6 +1349,10 @@ type SimpleName struct {
 
 func (s *SimpleName) Name() string {
 	return s.Properties.Name
+}
+
+func (s *SimpleName) String() string {
+	return s.Name()
 }
 
 // Load Hooks
