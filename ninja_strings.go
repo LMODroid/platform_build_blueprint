@@ -437,7 +437,7 @@ func toNinjaName(name string) string {
 	return ret.String()
 }
 
-var builtinRuleArgs = []string{"out", "in"}
+var builtinRuleArgs = []string{"out", "in", "in_newline"}
 
 func validateArgName(argName string) error {
 	err := validateNinjaName(argName)
