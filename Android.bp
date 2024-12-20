@@ -58,7 +58,6 @@ bootstrap_go_package {
         "provider.go",
         "scope.go",
         "singleton_ctx.go",
-        "source_file_provider.go",
         "transition.go",
     ],
     testSrcs: [
