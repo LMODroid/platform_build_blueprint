@@ -4729,7 +4729,6 @@ func orderOnlyForIncremental(c *Context, modules []*moduleInfo, phonys *localBui
 				Rule:          Phony,
 				OutputStrings: []string{dep},
 				InputStrings:  orderOnlyStrings,
-				Optional:      true,
 			}
 			phonys.buildDefs = append(phonys.buildDefs, &phony)
 			c.orderOnlyStringsToCache[dep] = orderOnlyStrings
@@ -4943,7 +4942,6 @@ func scanBuildDef(candidates *sync.Map, b *buildDef, incremental bool) {
 					Rule:          Phony,
 					OutputStrings: []string{fmt.Sprintf("dedup-%x", key)},
 					InputStrings:  m.first.OrderOnlyStrings,
-					Optional:      true,
 				}
 				// the previously recorded build-def, which first had these deps as its
 				// order-only deps, should now use this phony output instead
