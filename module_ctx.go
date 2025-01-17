@@ -119,6 +119,11 @@ func CreateModuleProxy(module Module) ModuleProxy {
 		module: module,
 	}
 }
+
+func (m ModuleProxy) IsNil() bool {
+	return m.module == nil
+}
+
 func (m ModuleProxy) Name() string {
 	return m.module.Name()
 }
