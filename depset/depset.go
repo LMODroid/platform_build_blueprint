@@ -18,8 +18,10 @@ import (
 	"fmt"
 	"iter"
 	"slices"
+	"unique"
 
 	"github.com/google/blueprint/gobtools"
+	"github.com/google/blueprint/uniquelist"
 )
 
 // DepSet is designed to be conceptually compatible with Bazel's depsets:
@@ -60,21 +62,28 @@ type depSettableType comparable
 // duplicated element is not guaranteed).
 //
 // A DepSet is created by New or NewBuilder.Build from the slice for direct contents
-// and the *DepSets of dependencies. A DepSet is immutable once created.
+// and the DepSets of dependencies. A DepSet is immutable once created.
+//
+// DepSets are stored using UniqueList which uses the unique package to intern them, which ensures
+// that the graph semantics of the DepSet are maintained even after serializing/deserializing or
+// when mixing newly created and deserialized DepSets.
 type DepSet[T depSettableType] struct {
-	handle *depSet[T]
+	// handle is a unique.Handle to an internal depSet object, which makes DepSets effectively a
+	// single pointer.
+	handle unique.Handle[depSet[T]]
 }
 
 type depSet[T depSettableType] struct {
 	preorder   bool
 	reverse    bool
 	order      Order
-	direct     []T
-	transitive []DepSet[T]
+	direct     uniquelist.UniqueList[T]
+	transitive uniquelist.UniqueList[DepSet[T]]
 }
 
-func (d DepSet[T]) impl() *depSet[T] {
-	return d.handle
+// impl returns a copy of the uniquified  depSet for a DepSet.
+func (d DepSet[T]) impl() depSet[T] {
+	return d.handle.Value()
 }
 
 func (d DepSet[T]) order() Order {
@@ -96,19 +105,19 @@ func (d *DepSet[T]) ToGob() *depSetGob[T] {
 		Preorder:   impl.preorder,
 		Reverse:    impl.reverse,
 		Order:      impl.order,
-		Direct:     impl.direct,
-		Transitive: impl.transitive,
+		Direct:     impl.direct.ToSlice(),
+		Transitive: impl.transitive.ToSlice(),
 	}
 }
 
 func (d *DepSet[T]) FromGob(data *depSetGob[T]) {
-	d.handle = &depSet[T]{
+	d.handle = unique.Make(depSet[T]{
 		preorder:   data.Preorder,
 		reverse:    data.Reverse,
 		order:      data.Order,
-		direct:     data.Direct,
-		transitive: data.Transitive,
-	}
+		direct:     uniquelist.Make(data.Direct),
+		transitive: uniquelist.Make(data.Transitive),
+	})
 }
 
 func (d DepSet[T]) GobEncode() ([]byte, error) {
@@ -123,12 +132,18 @@ func (d *DepSet[T]) GobDecode(data []byte) error {
 func New[T depSettableType](order Order, direct []T, transitive []DepSet[T]) DepSet[T] {
 	var directCopy []T
 	var transitiveCopy []DepSet[T]
+
+	// Create a zero value of DepSet, which will be used to check if the unique.Handle is the zero value.
+	var zeroDepSet DepSet[T]
+
 	nonEmptyTransitiveCount := 0
 	for _, t := range transitive {
-		if t.handle != nil {
-			if t.order() != order {
+		// A zero valued DepSet has no associated unique.Handle for a depSet.  It has no contents, so it can
+		// be skipped.
+		if t != zeroDepSet {
+			if t.handle.Value().order != order {
 				panic(fmt.Errorf("incompatible order, new DepSet is %s but transitive DepSet is %s",
-					order, t.order()))
+					order, t.handle.Value().order))
 			}
 			nonEmptyTransitiveCount++
 		}
@@ -147,25 +162,34 @@ func New[T depSettableType](order Order, direct []T, transitive []DepSet[T]) Dep
 	} else {
 		transitiveIter = slices.All(transitive)
 	}
+
+	// Copy only the non-zero-valued elements in the transitive list.  transitiveIter may be a forwards
+	// or backards iterator.
 	for _, t := range transitiveIter {
-		if t.handle != nil {
+		if t != zeroDepSet {
 			transitiveCopy = append(transitiveCopy, t)
 		}
 	}
 
+	// Optimization:  If both the direct and transitive lists are empty then this DepSet is semantically
+	// equivalent to the zero valued DepSet (effectively a nil pointer).  Returning the zero value will
+	// allow this DepSet to be skipped in DepSets that reference this one as a transitive input, saving
+	// memory.
 	if len(directCopy) == 0 && len(transitive) == 0 {
-		return DepSet[T]{nil}
+		return DepSet[T]{}
 	}
 
-	depSet := &depSet[T]{
+	// Create a depSet to hold the contents.
+	depSet := depSet[T]{
 		preorder:   order == PREORDER,
 		reverse:    order == TOPOLOGICAL,
 		order:      order,
-		direct:     directCopy,
-		transitive: transitiveCopy,
+		direct:     uniquelist.Make(directCopy),
+		transitive: uniquelist.Make(transitiveCopy),
 	}
 
-	return DepSet[T]{depSet}
+	// Uniquify the depSet and store it in a DepSet.
+	return DepSet[T]{unique.Make(depSet)}
 }
 
 // Builder is used to create an immutable DepSet.
@@ -200,8 +224,9 @@ func (b *Builder[T]) Direct(direct ...T) *Builder[T] {
 // Transitive adds transitive contents to the DepSet being built by a Builder. Newly added
 // transitive contents are to the right of any existing transitive contents.
 func (b *Builder[T]) Transitive(transitive ...DepSet[T]) *Builder[T] {
+	var zeroDepSet DepSet[T]
 	for _, t := range transitive {
-		if t.handle != nil && t.order() != b.order {
+		if t != zeroDepSet && t.order() != b.order {
 			panic(fmt.Errorf("incompatible order, new DepSet is %s but transitive DepSet is %s",
 				b.order, t.order()))
 		}
@@ -216,30 +241,33 @@ func (b *Builder[T]) Build() DepSet[T] {
 	return New(b.order, b.direct, b.transitive)
 }
 
-// walk calls the visit method in depth-first order on a DepSet, preordered if d.preorder is set,
+// collect collects the contents of the DepSet in depth-first order, preordered if d.preorder is set,
 // otherwise postordered.
-func (d DepSet[T]) walk(visit func([]T)) {
+func (d DepSet[T]) collect() []T {
 	visited := make(map[DepSet[T]]bool)
+	var list []T
 
 	var dfs func(d DepSet[T])
 	dfs = func(d DepSet[T]) {
 		impl := d.impl()
 		visited[d] = true
 		if impl.preorder {
-			visit(impl.direct)
+			list = impl.direct.AppendTo(list)
 		}
-		for _, dep := range impl.transitive {
+		for dep := range impl.transitive.Iter() {
 			if !visited[dep] {
 				dfs(dep)
 			}
 		}
 
 		if !impl.preorder {
-			visit(impl.direct)
+			list = impl.direct.AppendTo(list)
 		}
 	}
 
 	dfs(d)
+
+	return list
 }
 
 // ToList returns the DepSet flattened to a list.  The order in the list is based on the order
@@ -249,14 +277,12 @@ func (d DepSet[T]) walk(visit func([]T)) {
 // its transitive dependencies, in which case the ordering of the duplicated element is not
 // guaranteed).
 func (d DepSet[T]) ToList() []T {
-	if d.handle == nil {
+	var zeroDepSet unique.Handle[depSet[T]]
+	if d.handle == zeroDepSet {
 		return nil
 	}
 	impl := d.impl()
-	var list []T
-	d.walk(func(paths []T) {
-		list = append(list, paths...)
-	})
+	list := d.collect()
 	list = firstUniqueInPlace(list)
 	if impl.reverse {
 		slices.Reverse(list)
