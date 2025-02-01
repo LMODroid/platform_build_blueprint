@@ -108,6 +108,14 @@ type IncomingTransitionContext interface {
 	// is being computed
 	Module() Module
 
+	// ModuleName returns the name of the module.  This is generally the value that was returned by Module.Name() when
+	// the module was created, but may have been modified by calls to BottomUpMutatorContext.Rename.
+	ModuleName() string
+
+	// DepTag() Returns the dependency tag through which this dependency is
+	// reached
+	DepTag() DependencyTag
+
 	// Config returns the config object that was passed to
 	// Context.PrepareBuildActions.
 	Config() interface{}
@@ -138,6 +146,10 @@ type OutgoingTransitionContext interface {
 	// is being computed
 	Module() Module
 
+	// ModuleName returns the name of the module.  This is generally the value that was returned by Module.Name() when
+	// the module was created, but may have been modified by calls to BottomUpMutatorContext.Rename.
+	ModuleName() string
+
 	// DepTag() Returns the dependency tag through which this dependency is
 	// reached
 	DepTag() DependencyTag
@@ -162,10 +174,11 @@ type OutgoingTransitionContext interface {
 }
 
 type transitionMutatorImpl struct {
-	name                        string
-	mutator                     TransitionMutator
-	variantCreatingMutatorIndex int
-	inputVariants               map[*moduleGroup][]*moduleInfo
+	name          string
+	mutator       TransitionMutator
+	index         int
+	inputVariants map[*moduleGroup][]*moduleInfo
+	neverFar      bool
 }
 
 // Adds each argument in items to l if it's not already there.
@@ -268,6 +281,10 @@ func (c *outgoingTransitionContextImpl) Module() Module {
 	return c.source.logicModule
 }
 
+func (c *outgoingTransitionContextImpl) ModuleName() string {
+	return c.source.group.name
+}
+
 func (c *outgoingTransitionContextImpl) Provider(provider AnyProviderKey) (any, bool) {
 	return c.context.provider(c.source, provider.provider())
 }
@@ -278,6 +295,10 @@ type incomingTransitionContextImpl struct {
 
 func (c *incomingTransitionContextImpl) Module() Module {
 	return c.dep.logicModule
+}
+
+func (c *incomingTransitionContextImpl) ModuleName() string {
+	return c.dep.group.name
 }
 
 func (c *incomingTransitionContextImpl) Provider(provider AnyProviderKey) (any, bool) {
@@ -351,12 +372,13 @@ type TransitionMutatorHandle interface {
 
 type transitionMutatorHandle struct {
 	inner MutatorHandle
+	impl  *transitionMutatorImpl
 }
 
 var _ TransitionMutatorHandle = (*transitionMutatorHandle)(nil)
 
 func (h *transitionMutatorHandle) NeverFar() TransitionMutatorHandle {
-	h.inner.setNeverFar()
+	h.impl.neverFar = true
 	return h
 }
 
@@ -366,7 +388,12 @@ func (c *Context) RegisterTransitionMutator(name string, mutator TransitionMutat
 	c.RegisterTopDownMutator(name+"_propagate", impl.topDownMutator)
 	bottomUpHandle := c.RegisterBottomUpMutator(name, impl.bottomUpMutator).setTransitionMutator(impl)
 	c.RegisterBottomUpMutator(name+"_mutate", impl.mutateMutator)
-	return &transitionMutatorHandle{inner: bottomUpHandle}
+
+	impl.index = len(c.transitionMutators)
+	c.transitionMutators = append(c.transitionMutators, impl)
+	c.transitionMutatorNames = append(c.transitionMutatorNames, name)
+
+	return &transitionMutatorHandle{inner: bottomUpHandle, impl: impl}
 }
 
 // This function is called for every dependency edge to determine which
