@@ -1125,19 +1125,11 @@ func (BaseDependencyTag) dependencyTag(DependencyTag) {
 
 var _ DependencyTag = BaseDependencyTag{}
 
-func (mctx *mutatorContext) createVariationsWithTransition(variationNames []string, outgoingTransitions [][]string) []Module {
-	return mctx.createVariations(variationNames, chooseDepByIndexes(mctx.mutator.name, outgoingTransitions))
-}
-
-func (mctx *mutatorContext) createVariations(variationNames []string, depChooser depChooser) []Module {
-	var ret []Module
+func (mctx *mutatorContext) createVariationsWithTransition(variationNames []string, outgoingTransitions [][]string) []*moduleInfo {
+	depChooser := chooseDepByIndexes(mctx.mutator.name, outgoingTransitions)
 	modules, errs := mctx.context.createVariations(mctx.module, mctx.mutator, depChooser, variationNames)
 	if len(errs) > 0 {
 		mctx.errs = append(mctx.errs, errs...)
-	}
-
-	for _, module := range modules {
-		ret = append(ret, module.logicModule)
 	}
 
 	if mctx.newVariations != nil {
@@ -1145,11 +1137,11 @@ func (mctx *mutatorContext) createVariations(variationNames []string, depChooser
 	}
 	mctx.newVariations = modules
 
-	if len(ret) != len(variationNames) {
+	if len(modules) != len(variationNames) {
 		panic("oops!")
 	}
 
-	return ret
+	return modules
 }
 
 func (mctx *mutatorContext) Module() Module {

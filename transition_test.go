@@ -523,40 +523,56 @@ func TestIsAddingDependency(t *testing.T) {
 
 type transitionTestMutator struct{}
 
-func (transitionTestMutator) Split(ctx BaseModuleContext) []string {
-	if split := ctx.Module().(*transitionModule).properties.Split; len(split) > 0 {
-		return split
-	}
-	return []string{""}
+func (transitionTestMutator) TransitionInfoFromVariation(s string) TransitionInfo {
+	return testTransitionInfo(s)
 }
 
-func (transitionTestMutator) OutgoingTransition(ctx OutgoingTransitionContext, sourceVariation string) string {
+type testTransitionInfo string
+
+func (t testTransitionInfo) Variation() string {
+	return string(t)
+}
+
+func (transitionTestMutator) Split(ctx BaseModuleContext) []TransitionInfo {
+	if split := ctx.Module().(*transitionModule).properties.Split; len(split) > 0 {
+		var transitionInfos []TransitionInfo
+		for _, s := range split {
+			transitionInfos = append(transitionInfos, testTransitionInfo(s))
+		}
+		return transitionInfos
+	}
+	return []TransitionInfo{testTransitionInfo("")}
+}
+
+func (transitionTestMutator) OutgoingTransition(ctx OutgoingTransitionContext, sourceVariation TransitionInfo) TransitionInfo {
 	if err := ctx.Module().(*transitionModule).properties.Outgoing_transition_error; err != nil {
 		ctx.ModuleErrorf("Error: %s", *err)
 	}
 	if outgoing := ctx.Module().(*transitionModule).properties.Outgoing; outgoing != nil {
-		return *outgoing
+		return testTransitionInfo(*outgoing)
 	}
 	return sourceVariation
 }
 
-func (transitionTestMutator) IncomingTransition(ctx IncomingTransitionContext, incomingVariation string) string {
+func (transitionTestMutator) IncomingTransition(ctx IncomingTransitionContext, incomingVariation TransitionInfo) TransitionInfo {
 	if err := ctx.Module().(*transitionModule).properties.Incoming_transition_error; err != nil {
 		ctx.ModuleErrorf("Error: %s", *err)
 	}
 	if ctx.IsAddingDependency() {
 		if incoming := ctx.Module().(*transitionModule).properties.Post_transition_incoming; incoming != nil {
-			return *incoming
+			return testTransitionInfo(*incoming)
 		}
 	}
 	if incoming := ctx.Module().(*transitionModule).properties.Incoming; incoming != nil {
-		return *incoming
+		return testTransitionInfo(*incoming)
 	}
 	return incomingVariation
 }
 
-func (transitionTestMutator) Mutate(ctx BottomUpMutatorContext, variation string) {
-	ctx.Module().(*transitionModule).properties.Mutated = variation
+func (transitionTestMutator) Mutate(ctx BottomUpMutatorContext, variation TransitionInfo) {
+	if variation != nil {
+		ctx.Module().(*transitionModule).properties.Mutated = variation.Variation()
+	}
 }
 
 type transitionModule struct {

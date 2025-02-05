@@ -359,12 +359,25 @@ type moduleInfo struct {
 	obsoletedByNewVariants bool
 
 	// Used by TransitionMutator implementations
-	transitionVariations     []string
-	currentTransitionMutator string
-	requiredVariationsLock   sync.Mutex
+
+	// incomingTransitionInfos stores the map from variation to TransitionInfo object for transitions that were
+	// requested by reverse dependencies.  It is updated by reverse dependencies and protected by
+	// incomingTransitionInfosLock.  It is invalid after the TransitionMutator top down mutator has run on
+	// this module.
+	incomingTransitionInfos     map[string]TransitionInfo
+	incomingTransitionInfosLock sync.Mutex
+	// splitTransitionInfos and splitTransitionVariations stores the list of TransitionInfo objects, and their
+	// corresponding variations, returned by Split or requested by reverse dependencies.  They are valid after the
+	// TransitionMutator top down mutator has run on this module, and invalid after the bottom up mutator has run.
+	splitTransitionInfos      []TransitionInfo
+	splitTransitionVariations []string
+	currentTransitionMutator  string
+
+	// transitionInfos stores the final TransitionInfo for this module indexed by transitionMutatorImpl.index
+	transitionInfos []TransitionInfo
 
 	// outgoingTransitionCache stores the final variation for each dependency, indexed by the source variation
-	// index in transitionVariations and then by the index of the dependency in directDeps
+	// index in splitTransitionInfos and then by the index of the dependency in directDeps
 	outgoingTransitionCache [][]string
 
 	// set during PrepareBuildActions
@@ -435,6 +448,13 @@ func (module *moduleInfo) ModuleCacheKey() string {
 	return fmt.Sprintf("%s-%s-%s-%s",
 		strings.ReplaceAll(filepath.Dir(module.relBlueprintsFile), "/", "."),
 		module.Name(), variant, module.typeName)
+}
+
+func (c *Context) setModuleTransitionInfo(module *moduleInfo, t *transitionMutatorImpl, info TransitionInfo) {
+	if len(module.transitionInfos) == 0 {
+		module.transitionInfos = make([]TransitionInfo, len(c.transitionMutators))
+	}
+	module.transitionInfos[t.index] = info
 }
 
 // A Variation is a way that a variant of a module differs from other variants of the same module.
@@ -1659,6 +1679,7 @@ func (c *Context) createVariations(origModule *moduleInfo, mutator *mutatorInfo,
 		newModule.properties = newProperties
 		newModule.providers = slices.Clone(origModule.providers)
 		newModule.providerInitialValueHashes = slices.Clone(origModule.providerInitialValueHashes)
+		newModule.transitionInfos = slices.Clone(origModule.transitionInfos)
 
 		newModules = append(newModules, newModule)
 
@@ -1703,20 +1724,6 @@ func chooseDepByIndexes(mutatorName string, variations [][]string) depChooser {
 	return func(source *moduleInfo, variationIndex, depIndex int, dep depInfo) (*moduleInfo, string) {
 		desiredVariation := variations[variationIndex][depIndex]
 		return chooseDep(dep.module.splitModules, mutatorName, desiredVariation, nil)
-	}
-}
-
-func chooseDepExplicit(mutatorName string,
-	variationName string, defaultVariationName *string) depChooser {
-	return func(source *moduleInfo, variationIndex, depIndex int, dep depInfo) (*moduleInfo, string) {
-		return chooseDep(dep.module.splitModules, mutatorName, variationName, defaultVariationName)
-	}
-}
-
-func chooseDepInherit(mutatorName string, defaultVariationName *string) depChooser {
-	return func(source *moduleInfo, variationIndex, depIndex int, dep depInfo) (*moduleInfo, string) {
-		sourceVariation := source.variant.variations.get(mutatorName)
-		return chooseDep(dep.module.splitModules, mutatorName, sourceVariation, defaultVariationName)
 	}
 }
 
@@ -1995,22 +2002,27 @@ func (c *Context) findReverseDependency(module *moduleInfo, config any, requeste
 // modify the requested variation.  It finds a variant that existed before the TransitionMutator ran that is
 // a subset of the requested variant to use as the module context for IncomingTransition.
 func (c *Context) applyTransitions(config any, module *moduleInfo, group *moduleGroup, variant variationMap,
-	requestedVariations []Variation) (variationMap, []error) {
+	requestedVariations []Variation, far bool) (variationMap, []error) {
 	for _, transitionMutator := range c.transitionMutators[:c.completedTransitionMutators] {
 		explicitlyRequested := slices.ContainsFunc(requestedVariations, func(variation Variation) bool {
 			return variation.Mutator == transitionMutator.name
 		})
 
-		sourceVariation := variant.get(transitionMutator.name)
-		outgoingVariation := sourceVariation
-
-		// Apply the outgoing transition if it was not explicitly requested.
-		if !explicitlyRequested {
+		var outgoingTransitionInfo TransitionInfo
+		if explicitlyRequested {
+			sourceVariation := variant.get(transitionMutator.name)
+			outgoingTransitionInfo = transitionMutator.mutator.TransitionInfoFromVariation(sourceVariation)
+		} else {
+			// Apply the outgoing transition if it was not explicitly requested.
+			var srcTransitionInfo TransitionInfo
+			if (!far || transitionMutator.neverFar) && len(module.transitionInfos) > transitionMutator.index {
+				srcTransitionInfo = module.transitionInfos[transitionMutator.index]
+			}
 			ctx := &outgoingTransitionContextImpl{
 				transitionContextImpl{context: c, source: module, dep: nil,
 					depTag: nil, postMutator: true, config: config},
 			}
-			outgoingVariation = transitionMutator.mutator.OutgoingTransition(ctx, sourceVariation)
+			outgoingTransitionInfo = transitionMutator.mutator.OutgoingTransition(ctx, srcTransitionInfo)
 			if len(ctx.errs) > 0 {
 				return variationMap{}, ctx.errs
 			}
@@ -2054,11 +2066,15 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 					depTag: nil, postMutator: true, config: config},
 			}
 
-			finalVariation := transitionMutator.mutator.IncomingTransition(ctx, outgoingVariation)
+			finalTransitionInfo := transitionMutator.mutator.IncomingTransition(ctx, outgoingTransitionInfo)
 			if len(ctx.errs) > 0 {
 				return variationMap{}, ctx.errs
 			}
-			variant.set(transitionMutator.name, finalVariation)
+			variation := ""
+			if finalTransitionInfo != nil {
+				variation = finalTransitionInfo.Variation()
+			}
+			variant.set(transitionMutator.name, variation)
 		}
 
 		if (matchingInputVariant == nil && !explicitlyRequested) || variant.get(transitionMutator.name) == "" {
@@ -2093,7 +2109,7 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 
 	if !reverse {
 		var errs []error
-		newVariant, errs = c.applyTransitions(config, module, possibleDeps, newVariant, requestedVariations)
+		newVariant, errs = c.applyTransitions(config, module, possibleDeps, newVariant, requestedVariations, far)
 		if len(errs) > 0 {
 			return nil, variationMap{}, errs
 		}
