@@ -166,7 +166,6 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 	}()
 
 	var out blueprint.StringWriterWriter
-	var f *os.File
 	var buf *bufio.Writer
 
 	ctx.BeginEvent("write_files")
@@ -193,12 +192,6 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 	if buf != nil {
 		if err := buf.Flush(); err != nil {
 			return nil, fmt.Errorf("error flushing Ninja file contents: %s", err)
-		}
-	}
-
-	if f != nil {
-		if err := f.Close(); err != nil {
-			return nil, fmt.Errorf("error closing Ninja file: %s", err)
 		}
 	}
 
