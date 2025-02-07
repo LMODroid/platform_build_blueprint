@@ -209,3 +209,70 @@ func compare_values(x, y reflect.Value) int {
 		panic(fmt.Sprintf("Could not compare types %s and %s", x.Type().String(), y.Type().String()))
 	}
 }
+
+func ContainsConfigurable(value interface{}) bool {
+	ptrs := make(map[uintptr]bool)
+	v := reflect.ValueOf(value)
+	if v.IsValid() {
+		return containsConfigurableInternal(v, ptrs)
+	}
+	return false
+}
+
+func containsConfigurableInternal(v reflect.Value, ptrs map[uintptr]bool) bool {
+	switch v.Kind() {
+	case reflect.Struct:
+		if IsConfigurable(v.Type()) {
+			return true
+		}
+		for i := 0; i < v.NumField(); i++ {
+			if containsConfigurableInternal(v.Field(i), ptrs) {
+				return true
+			}
+		}
+	case reflect.Map:
+		iter := v.MapRange()
+		for iter.Next() {
+			key := iter.Key()
+			value := iter.Value()
+			if containsConfigurableInternal(key, ptrs) {
+				return true
+			}
+			if containsConfigurableInternal(value, ptrs) {
+				return true
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			if containsConfigurableInternal(v.Index(i), ptrs) {
+				return true
+			}
+		}
+	case reflect.Pointer:
+		if v.IsNil() {
+			return false
+		}
+		addr := v.Pointer()
+		if _, ok := ptrs[addr]; ok {
+			// pointer cycle
+			return false
+		}
+		ptrs[addr] = true
+		if containsConfigurableInternal(v.Elem(), ptrs) {
+			return true
+		}
+	case reflect.Interface:
+		if v.IsNil() {
+			return false
+		} else {
+			// The only way get the pointer out of an interface to hash it or check for cycles
+			// would be InterfaceData(), but that's deprecated and seems like it has undefined behavior.
+			if containsConfigurableInternal(v.Elem(), ptrs) {
+				return true
+			}
+		}
+	default:
+		return false
+	}
+	return false
+}

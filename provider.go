@@ -186,6 +186,11 @@ func (c *Context) setProvider(m *moduleInfo, provider *providerKey, value any) {
 
 	m.providers[provider.id] = value
 
+	containsConfigurableChan := make(chan bool)
+	go func() {
+		containsConfigurableChan <- proptools.ContainsConfigurable(value)
+	}()
+
 	if m.providerInitialValueHashes == nil {
 		m.providerInitialValueHashes = make([]uint64, len(providerRegistry))
 	}
@@ -194,6 +199,10 @@ func (c *Context) setProvider(m *moduleInfo, provider *providerKey, value any) {
 		panic(fmt.Sprintf("Can't set value of provider %s: %s", provider.typ, err.Error()))
 	}
 	m.providerInitialValueHashes[provider.id] = hash
+
+	if <-containsConfigurableChan {
+		panic(fmt.Sprintf("Providers can't contain Configurable objects: %s", provider.typ))
+	}
 }
 
 // provider returns the value, if any, for a given provider for a module.  Verifies that it is
