@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // This file exposes the logic of locating a module via a query string, to enable
@@ -131,9 +132,41 @@ func (s *SimpleNameInterface) NewModule(ctx NamespaceContext, group ModuleGroup,
 		}
 	}
 
+	if !isValidModuleName(name) {
+		return nil, []error{
+			// seven characters at the start of the second line to align with the string "error: "
+			fmt.Errorf("module %q should use a valid name.\n"+
+				"       Special chars like spaces are not allowed.", name),
+		}
+	}
+
 	s.modules[name] = group
 
 	return nil, []error{}
+}
+
+// Leters, Digits, Underscore, `+` (libc++), `.` are valid chars for module names.
+// Additional chars like `-` were added to the list to account for module names
+// that predate the enforcement of this check.
+var allowedSpecialCharsInModuleNames = map[rune]bool{
+	'_': true,
+	'-': true,
+	'.': true,
+	'/': true,
+	'@': true,
+	'+': true,
+	'&': true,
+}
+
+func isValidModuleName(name string) bool {
+	for _, c := range name {
+		_, allowedSpecialChar := allowedSpecialCharsInModuleNames[c]
+		valid := unicode.IsLetter(c) || unicode.IsDigit(c) || allowedSpecialChar
+		if !valid {
+			return false
+		}
+	}
+	return len(name) > 0
 }
 
 func (s *SimpleNameInterface) NewSkippedModule(ctx NamespaceContext, name string, info SkippedModuleInfo) {

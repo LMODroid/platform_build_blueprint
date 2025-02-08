@@ -170,6 +170,29 @@ func TestAddVariationDependencies(t *testing.T) {
 
 }
 
+func TestInvalidModuleNames(t *testing.T) {
+	t.Helper()
+	bp := `
+		test {
+			name: "fo o", // contains space
+		}
+	`
+
+	mockFS := map[string][]byte{
+		"Android.bp": []byte(bp),
+	}
+
+	ctx := NewContext()
+	ctx.RegisterModuleType("test", newModuleCtxTestModule)
+
+	ctx.MockFileSystem(mockFS)
+	_, errs := ctx.ParseFileList(".", []string{"Android.bp"}, nil)
+
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "should use a valid name") {
+		t.Errorf("Expected invalid name exception, found %s", errs)
+	}
+}
+
 func TestCheckBlueprintSyntax(t *testing.T) {
 	factories := map[string]ModuleFactory{
 		"test": newModuleCtxTestModule,
