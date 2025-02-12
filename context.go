@@ -47,6 +47,7 @@ import (
 	"github.com/google/blueprint/metrics"
 	"github.com/google/blueprint/parser"
 	"github.com/google/blueprint/pathtools"
+	"github.com/google/blueprint/pool"
 	"github.com/google/blueprint/proptools"
 )
 
@@ -2018,13 +2019,17 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 			if (!far || transitionMutator.neverFar) && len(module.transitionInfos) > transitionMutator.index {
 				srcTransitionInfo = module.transitionInfos[transitionMutator.index]
 			}
-			ctx := &outgoingTransitionContextImpl{
+			ctx := outgoingTransitionContextPool.Get()
+			*ctx = outgoingTransitionContextImpl{
 				transitionContextImpl{context: c, source: module, dep: nil,
 					depTag: nil, postMutator: true, config: config},
 			}
 			outgoingTransitionInfo = transitionMutator.mutator.OutgoingTransition(ctx, srcTransitionInfo)
-			if len(ctx.errs) > 0 {
-				return variationMap{}, ctx.errs
+			errs := ctx.errs
+			outgoingTransitionContextPool.Put(ctx)
+			ctx = nil
+			if len(errs) > 0 {
+				return variationMap{}, errs
 			}
 		}
 
@@ -2061,14 +2066,18 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 
 		if matchingInputVariant != nil {
 			// Apply the incoming transition.
-			ctx := &incomingTransitionContextImpl{
+			ctx := incomingTransitionContextPool.Get()
+			*ctx = incomingTransitionContextImpl{
 				transitionContextImpl{context: c, source: nil, dep: matchingInputVariant,
 					depTag: nil, postMutator: true, config: config},
 			}
 
 			finalTransitionInfo := transitionMutator.mutator.IncomingTransition(ctx, outgoingTransitionInfo)
-			if len(ctx.errs) > 0 {
-				return variationMap{}, ctx.errs
+			errs := ctx.errs
+			incomingTransitionContextPool.Put(ctx)
+			ctx = nil
+			if len(errs) > 0 {
+				return variationMap{}, errs
 			}
 			variation := ""
 			if finalTransitionInfo != nil {
@@ -2864,6 +2873,10 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 			return
 		}
 
+		pprof.Do(c.Context, pprof.Labels("blueprint", "GC"), func(ctx context.Context) {
+			runtime.GC()
+		})
+
 		var depsSingletons []string
 		depsSingletons, errs = c.generateSingletonBuildActions(config, c.singletonInfo, c.liveGlobals)
 		if len(errs) > 0 {
@@ -2995,6 +3008,8 @@ type reverseDep struct {
 	dep    depInfo
 }
 
+var mutatorContextPool = pool.New[mutatorContext]()
+
 func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	direction mutatorDirection) (deps []string, errs []error) {
 
@@ -3030,7 +3045,8 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			panic("split module found in sorted module list")
 		}
 
-		mctx := &mutatorContext{
+		mctx := mutatorContextPool.Get()
+		*mctx = mutatorContext{
 			baseModuleContext: baseModuleContext{
 				context: c,
 				config:  config,
@@ -3061,26 +3077,29 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 
 		module.finishedMutator = mutatorGroup[len(mutatorGroup)-1].index
 
+		hasErrors := false
 		if len(mctx.errs) > 0 {
 			errsCh <- mctx.errs
-			return true
-		}
+			hasErrors = true
+		} else {
+			if len(mctx.newVariations) > 0 {
+				newVariationsCh <- newVariationPair{mctx.newVariations, origLogicModule}
+			}
 
-		if len(mctx.newVariations) > 0 {
-			newVariationsCh <- newVariationPair{mctx.newVariations, origLogicModule}
-		}
-
-		if len(mctx.reverseDeps) > 0 || len(mctx.replace) > 0 || len(mctx.rename) > 0 || len(mctx.newModules) > 0 || len(mctx.ninjaFileDeps) > 0 {
-			globalStateCh <- globalStateChange{
-				reverse:    mctx.reverseDeps,
-				replace:    mctx.replace,
-				rename:     mctx.rename,
-				newModules: mctx.newModules,
-				deps:       mctx.ninjaFileDeps,
+			if len(mctx.reverseDeps) > 0 || len(mctx.replace) > 0 || len(mctx.rename) > 0 || len(mctx.newModules) > 0 || len(mctx.ninjaFileDeps) > 0 {
+				globalStateCh <- globalStateChange{
+					reverse:    mctx.reverseDeps,
+					replace:    mctx.replace,
+					rename:     mctx.rename,
+					newModules: mctx.newModules,
+					deps:       mctx.ninjaFileDeps,
+				}
 			}
 		}
+		mutatorContextPool.Put(mctx)
+		mctx = nil
 
-		return false
+		return hasErrors
 	}
 
 	var obsoleteLogicModules []Module
