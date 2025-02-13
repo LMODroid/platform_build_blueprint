@@ -1021,10 +1021,6 @@ type mutatorContext struct {
 	pauseCh          chan<- pauseSpec
 }
 
-type TopDownMutatorContext interface {
-	BaseModuleContext
-}
-
 type BottomUpMutatorContext interface {
 	BaseModuleContext
 
@@ -1107,7 +1103,6 @@ type BottomUpMutatorContext interface {
 // The Mutator function should only modify members of properties structs, and not
 // members of the module struct itself, to ensure the modified values are copied
 // if a second Mutator chooses to split the module a second time.
-type TopDownMutator func(mctx TopDownMutatorContext)
 type BottomUpMutator func(mctx BottomUpMutatorContext)
 
 // DependencyTag is an interface to an arbitrary object that embeds BaseDependencyTag.  It can be

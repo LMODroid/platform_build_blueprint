@@ -234,7 +234,7 @@ func (t *transitionMutatorImpl) addRequiredVariation(m *moduleInfo, variation st
 	}
 }
 
-func (t *transitionMutatorImpl) topDownMutator(mctx TopDownMutatorContext) {
+func (t *transitionMutatorImpl) propagateMutator(mctx BaseModuleContext) {
 	module := mctx.(*mutatorContext).module
 	mutatorSplits := t.mutator.Split(mctx)
 	if mutatorSplits == nil || len(mutatorSplits) == 0 {
@@ -446,7 +446,7 @@ func (h *transitionMutatorHandle) NeverFar() TransitionMutatorHandle {
 func (c *Context) RegisterTransitionMutator(name string, mutator TransitionMutator) TransitionMutatorHandle {
 	impl := &transitionMutatorImpl{name: name, mutator: mutator}
 
-	c.RegisterTopDownMutator(name+"_propagate", impl.topDownMutator)
+	c.registerTransitionPropagateMutator(name+"_propagate", impl.propagateMutator)
 	bottomUpHandle := c.RegisterBottomUpMutator(name, impl.bottomUpMutator).setTransitionMutator(impl)
 	c.RegisterBottomUpMutator(name+"_mutate", impl.mutateMutator)
 

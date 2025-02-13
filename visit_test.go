@@ -50,7 +50,7 @@ func visitDepsMutator(ctx BottomUpMutatorContext) {
 	}
 }
 
-func visitMutator(ctx TopDownMutatorContext) {
+func visitMutator(ctx BottomUpMutatorContext) {
 	if m, ok := ctx.Module().(*visitModule); ok {
 		ctx.VisitDepsDepthFirst(func(dep Module) {
 			if ctx.OtherModuleDependencyTag(dep) != visitTagDep {
@@ -90,7 +90,7 @@ func setupVisitTest(t *testing.T) *Context {
 	ctx := NewContext()
 	ctx.RegisterModuleType("visit_module", newVisitModule)
 	ctx.RegisterBottomUpMutator("visit_deps", visitDepsMutator)
-	ctx.RegisterTopDownMutator("visit", visitMutator)
+	ctx.RegisterBottomUpMutator("visit", visitMutator)
 
 	ctx.MockFileSystem(map[string][]byte{
 		"Android.bp": []byte(`

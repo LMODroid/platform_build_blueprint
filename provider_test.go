@@ -176,8 +176,6 @@ var invalidProviderUsageMutatorInfoProvider = NewMutatorProvider[invalidProvider
 var invalidProviderUsageGenerateBuildActionsInfoProvider = NewProvider[invalidProviderUsageGenerateBuildActionsInfo]()
 
 type invalidProviderUsageTestModule struct {
-	parent *invalidProviderUsageTestModule
-
 	SimpleName
 	properties struct {
 		Deps []string
@@ -188,9 +186,7 @@ type invalidProviderUsageTestModule struct {
 		Early_mutator_set_of_build_actions_provider bool
 
 		Early_mutator_get_of_mutator_provider       bool
-		Early_module_get_of_mutator_provider        bool
 		Early_mutator_get_of_build_actions_provider bool
-		Early_module_get_of_build_actions_provider  bool
 
 		Duplicate_set bool
 	}
@@ -199,14 +195,6 @@ type invalidProviderUsageTestModule struct {
 func invalidProviderUsageDepsMutator(ctx BottomUpMutatorContext) {
 	if i, ok := ctx.Module().(*invalidProviderUsageTestModule); ok {
 		ctx.AddDependency(ctx.Module(), nil, i.properties.Deps...)
-	}
-}
-
-func invalidProviderUsageParentMutator(ctx TopDownMutatorContext) {
-	if i, ok := ctx.Module().(*invalidProviderUsageTestModule); ok {
-		ctx.VisitDirectDeps(func(module Module) {
-			module.(*invalidProviderUsageTestModule).parent = i
-		})
 	}
 }
 
@@ -223,7 +211,7 @@ func invalidProviderUsageBeforeMutator(ctx BottomUpMutatorContext) {
 	}
 }
 
-func invalidProviderUsageMutatorUnderTest(ctx TopDownMutatorContext) {
+func invalidProviderUsageMutatorUnderTest(ctx BottomUpMutatorContext) {
 	if i, ok := ctx.Module().(*invalidProviderUsageTestModule); ok {
 		if i.properties.Early_mutator_set_of_build_actions_provider {
 			// A mutator attempting to set the value of a non-mutator provider.
@@ -232,14 +220,6 @@ func invalidProviderUsageMutatorUnderTest(ctx TopDownMutatorContext) {
 		if i.properties.Early_mutator_get_of_build_actions_provider {
 			// A mutator attempting to get the value of a non-mutator provider.
 			_, _ = ModuleProvider(ctx, invalidProviderUsageGenerateBuildActionsInfoProvider)
-		}
-		if i.properties.Early_module_get_of_mutator_provider {
-			// A mutator attempting to get the value of a provider associated with this mutator on
-			// a module for which this mutator hasn't run.  This is a top down mutator so
-			// dependencies haven't run yet.
-			ctx.VisitDirectDeps(func(module Module) {
-				_, _ = OtherModuleProvider(ctx, module, invalidProviderUsageMutatorInfoProvider)
-			})
 		}
 	}
 }
@@ -262,11 +242,6 @@ func (i *invalidProviderUsageTestModule) GenerateBuildActions(ctx ModuleContext)
 		// A GenerateBuildActions trying to set the value of a provider associated with a mutator.
 		SetProvider(ctx, invalidProviderUsageMutatorInfoProvider, invalidProviderUsageMutatorInfo(""))
 	}
-	if i.properties.Early_module_get_of_build_actions_provider {
-		// A GenerateBuildActions trying to get the value of a provider on a module for which
-		// GenerateBuildActions hasn't run.
-		_, _ = OtherModuleProvider(ctx, i.parent, invalidProviderUsageGenerateBuildActionsInfoProvider)
-	}
 	if i.properties.Duplicate_set {
 		SetProvider(ctx, invalidProviderUsageGenerateBuildActionsInfoProvider, invalidProviderUsageGenerateBuildActionsInfo(""))
 		SetProvider(ctx, invalidProviderUsageGenerateBuildActionsInfoProvider, invalidProviderUsageGenerateBuildActionsInfo(""))
@@ -283,9 +258,8 @@ func TestInvalidProvidersUsage(t *testing.T) {
 		})
 		ctx.RegisterBottomUpMutator("deps", invalidProviderUsageDepsMutator)
 		ctx.RegisterBottomUpMutator("before", invalidProviderUsageBeforeMutator)
-		ctx.RegisterTopDownMutator("mutator_under_test", invalidProviderUsageMutatorUnderTest)
+		ctx.RegisterBottomUpMutator("mutator_under_test", invalidProviderUsageMutatorUnderTest)
 		ctx.RegisterBottomUpMutator("after", invalidProviderUsageAfterMutator)
-		ctx.RegisterTopDownMutator("parent", invalidProviderUsageParentMutator)
 
 		// Don't invalidate the parent pointer and before GenerateBuildActions.
 		ctx.SkipCloneModulesAfterMutators = true
@@ -396,17 +370,7 @@ func TestInvalidProvidersUsage(t *testing.T) {
 			panicMsg: "Can't get value of provider blueprint.invalidProviderUsageMutatorInfo before mutator mutator_under_test finished",
 		},
 		{
-			prop:     "early_module_get_of_mutator_provider",
-			module:   "module_under_test",
-			panicMsg: "Can't get value of provider blueprint.invalidProviderUsageMutatorInfo before mutator mutator_under_test finished",
-		},
-		{
 			prop:     "early_mutator_get_of_build_actions_provider",
-			module:   "module_under_test",
-			panicMsg: "Can't get value of provider blueprint.invalidProviderUsageGenerateBuildActionsInfo before GenerateBuildActions finished",
-		},
-		{
-			prop:     "early_module_get_of_build_actions_provider",
 			module:   "module_under_test",
 			panicMsg: "Can't get value of provider blueprint.invalidProviderUsageGenerateBuildActionsInfo before GenerateBuildActions finished",
 		},
