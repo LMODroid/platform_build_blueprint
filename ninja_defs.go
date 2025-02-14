@@ -90,6 +90,7 @@ type BuildParams struct {
 	Validations     []string          // The list of validations to run when this rule runs.
 	Args            map[string]string // The variable/value pairs to set.
 	Default         bool              // Output a ninja default statement
+	PhonyOutput     bool              // This is a phony_output
 }
 
 // A poolDef describes a pool definition.  It does not include the name of the
@@ -392,6 +393,10 @@ func parseBuildParams(scope scope, params *BuildParams,
 
 			b.Args[argVar] = ninjaValue
 		}
+	}
+
+	if params.PhonyOutput {
+		setVariable("phony_output", simpleNinjaString("true"))
 	}
 
 	return b, nil

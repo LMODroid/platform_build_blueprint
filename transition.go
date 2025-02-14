@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+
+	"github.com/google/blueprint/pool"
 )
 
 // TransitionMutator implements a top-down mechanism where a module tells its
@@ -280,6 +282,11 @@ func (t *transitionMutatorImpl) topDownMutator(mctx TopDownMutatorContext) {
 	module.splitTransitionInfos = transitionInfos
 }
 
+var (
+	outgoingTransitionContextPool = pool.New[outgoingTransitionContextImpl]()
+	incomingTransitionContextPool = pool.New[incomingTransitionContextImpl]()
+)
+
 type transitionContextImpl struct {
 	context     *Context
 	source      *moduleInfo
@@ -357,19 +364,25 @@ func (t *transitionMutatorImpl) transition(mctx BaseModuleContext) Transition {
 			depTag:  depTag,
 			config:  mctx.Config(),
 		}
-		outCtx := &outgoingTransitionContextImpl{tc}
+		outCtx := outgoingTransitionContextPool.Get()
+		*outCtx = outgoingTransitionContextImpl{tc}
 		outgoingTransitionInfo := t.mutator.OutgoingTransition(outCtx, sourceTransitionInfo)
 		for _, err := range outCtx.errs {
 			mctx.error(err)
 		}
+		outgoingTransitionContextPool.Put(outCtx)
+		outCtx = nil
 		if mctx.Failed() {
 			return outgoingTransitionInfo
 		}
-		inCtx := &incomingTransitionContextImpl{tc}
+		inCtx := incomingTransitionContextPool.Get()
+		*inCtx = incomingTransitionContextImpl{tc}
 		finalTransitionInfo := t.mutator.IncomingTransition(inCtx, outgoingTransitionInfo)
 		for _, err := range inCtx.errs {
 			mctx.error(err)
 		}
+		incomingTransitionContextPool.Put(inCtx)
+		inCtx = nil
 		return finalTransitionInfo
 	}
 }
