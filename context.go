@@ -557,11 +557,11 @@ type singletonInfo struct {
 
 type mutatorInfo struct {
 	// set during RegisterMutator
-	topDownMutator    TopDownMutator
-	bottomUpMutator   BottomUpMutator
-	name              string
-	index             int
-	transitionMutator *transitionMutatorImpl
+	transitionPropagateMutator func(BaseModuleContext)
+	bottomUpMutator            BottomUpMutator
+	name                       string
+	index                      int
+	transitionMutator          *transitionMutatorImpl
 
 	usesRename              bool
 	usesReverseDependencies bool
@@ -805,27 +805,20 @@ func singletonTypeName(singleton Singleton) string {
 	return typ.PkgPath() + "." + typ.Name()
 }
 
-// RegisterTopDownMutator registers a mutator that will be invoked to propagate dependency info
-// top-down between Modules.  Each registered mutator is invoked in registration order (mixing
-// TopDownMutators and BottomUpMutators) once per Module, and the invocation on any module will
-// have returned before it is in invoked on any of its dependencies.
-//
-// The mutator type names given here must be unique to all top down mutators in
-// the Context.
-//
-// Returns a MutatorHandle, on which Parallel can be called to set the mutator to visit modules in
-// parallel while maintaining ordering.
-func (c *Context) RegisterTopDownMutator(name string, mutator TopDownMutator) MutatorHandle {
+// registerTransitionPropagateMutator registers a mutator that will be invoked to propagate transition mutator
+// configuration info top-down between Modules.
+func (c *Context) registerTransitionPropagateMutator(name string, mutator func(mctx BaseModuleContext)) MutatorHandle {
 	for _, m := range c.mutatorInfo {
-		if m.name == name && m.topDownMutator != nil {
+		if m.name == name && m.transitionPropagateMutator != nil {
 			panic(fmt.Errorf("mutator %q is already registered", name))
 		}
 	}
 
 	info := &mutatorInfo{
-		topDownMutator: mutator,
-		name:           name,
-		index:          len(c.mutatorInfo),
+		transitionPropagateMutator: mutator,
+
+		name:  name,
+		index: len(c.mutatorInfo),
 	}
 
 	c.mutatorInfo = append(c.mutatorInfo, info)
@@ -834,15 +827,11 @@ func (c *Context) RegisterTopDownMutator(name string, mutator TopDownMutator) Mu
 }
 
 // RegisterBottomUpMutator registers a mutator that will be invoked to split Modules into variants.
-// Each registered mutator is invoked in registration order (mixing TopDownMutators and
-// BottomUpMutators) once per Module, will not be invoked on a module until the invocations on all
-// of the modules dependencies have returned.
+// Each registered mutator is invoked in registration order once per Module, and will not be invoked on a
+// module until the invocations on all of the modules dependencies have returned.
 //
 // The mutator type names given here must be unique to all bottom up or early
 // mutators in the Context.
-//
-// Returns a MutatorHandle, on which Parallel can be called to set the mutator to visit modules in
-// parallel while maintaining ordering.
 func (c *Context) RegisterBottomUpMutator(name string, mutator BottomUpMutator) MutatorHandle {
 	for _, m := range c.variantMutatorNames {
 		if m == name {
@@ -2931,7 +2920,7 @@ func (c *Context) runMutators(ctx context.Context, config interface{}, mutatorGr
 				c.BeginEvent(name)
 				defer c.EndEvent(name)
 				var newDeps []string
-				if mutatorGroup[0].topDownMutator != nil {
+				if mutatorGroup[0].transitionPropagateMutator != nil {
 					newDeps, errs = c.runMutator(config, mutatorGroup, topDownMutator)
 				} else if mutatorGroup[0].bottomUpMutator != nil {
 					newDeps, errs = c.runMutator(config, mutatorGroup, bottomUpMutator)
@@ -2987,7 +2976,7 @@ func (topDownMutatorImpl) run(mutatorGroup []*mutatorInfo, ctx *mutatorContext) 
 	if len(mutatorGroup) > 1 {
 		panic(fmt.Errorf("top down mutator group %s must only have 1 mutator, found %d", mutatorGroup[0].name, len(mutatorGroup)))
 	}
-	mutatorGroup[0].topDownMutator(ctx)
+	mutatorGroup[0].transitionPropagateMutator(ctx)
 }
 
 func (topDownMutatorImpl) orderer() visitOrderer {

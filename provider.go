@@ -252,8 +252,8 @@ func (c *Context) mutatorStartedForModule(mutator *mutatorInfo, m *moduleInfo) b
 	return m.startedMutator >= mutator.index
 }
 
-// OtherModuleProviderContext is a helper interface that is a subset of ModuleContext, BottomUpMutatorContext, or
-// TopDownMutatorContext for use in OtherModuleProvider.
+// OtherModuleProviderContext is a helper interface that is a subset of ModuleContext or BottomUpMutatorContext
+// for use in OtherModuleProvider.
 type OtherModuleProviderContext interface {
 	OtherModuleProvider(m Module, provider AnyProviderKey) (any, bool)
 }
@@ -261,7 +261,6 @@ type OtherModuleProviderContext interface {
 var _ OtherModuleProviderContext = BaseModuleContext(nil)
 var _ OtherModuleProviderContext = ModuleContext(nil)
 var _ OtherModuleProviderContext = BottomUpMutatorContext(nil)
-var _ OtherModuleProviderContext = TopDownMutatorContext(nil)
 
 // OtherModuleProvider reads the provider for the given module.  If the provider has been set the value is
 // returned and the boolean is true.  If it has not been set the zero value of the provider's type  is returned
@@ -301,8 +300,8 @@ func SingletonModuleProvider[K any](ctx SingletonModuleProviderContext, module M
 	return value.(K), ok
 }
 
-// ModuleProviderContext is a helper interface that is a subset of ModuleContext, BottomUpMutatorContext, or
-// TopDownMutatorContext for use in ModuleProvider.
+// ModuleProviderContext is a helper interface that is a subset of ModuleContext or BottomUpMutatorContext
+// for use in ModuleProvider.
 type ModuleProviderContext interface {
 	Provider(provider AnyProviderKey) (any, bool)
 }
@@ -310,7 +309,6 @@ type ModuleProviderContext interface {
 var _ ModuleProviderContext = BaseModuleContext(nil)
 var _ ModuleProviderContext = ModuleContext(nil)
 var _ ModuleProviderContext = BottomUpMutatorContext(nil)
-var _ ModuleProviderContext = TopDownMutatorContext(nil)
 
 // ModuleProvider reads the provider for the current module.  If the provider has been set the value is
 // returned and the boolean is true.  If it has not been set the zero value of the provider's type  is returned
@@ -327,8 +325,8 @@ func ModuleProvider[K any](ctx ModuleProviderContext, provider ProviderKey[K]) (
 	return value.(K), ok
 }
 
-// SetProviderContext is a helper interface that is a subset of ModuleContext, BottomUpMutatorContext, or
-// TopDownMutatorContext for use in SetProvider.
+// SetProviderContext is a helper interface that is a subset of ModuleContext or BottomUpMutatorContext
+// for use in SetProvider.
 type SetProviderContext interface {
 	SetProvider(provider AnyProviderKey, value any)
 }
@@ -336,7 +334,6 @@ type SetProviderContext interface {
 var _ SetProviderContext = BaseModuleContext(nil)
 var _ SetProviderContext = ModuleContext(nil)
 var _ SetProviderContext = BottomUpMutatorContext(nil)
-var _ SetProviderContext = TopDownMutatorContext(nil)
 
 // SetProvider sets the value for a provider for the current module.  It panics if not called
 // during the appropriate mutator or GenerateBuildActions pass for the provider, if the value
