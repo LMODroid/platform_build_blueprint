@@ -212,6 +212,28 @@ func (c *Context) setProvider(m *moduleInfo, provider *providerKey, value any) {
 // Once Go has generics the return value can be typed and the type assert by callers can be dropped:
 // provider(type T)(m *moduleInfo, provider ProviderKey(T)) T
 func (c *Context) provider(m *moduleInfo, provider *providerKey) (any, bool) {
+	validateProvider(c, m, provider)
+	if len(m.providers) > provider.id {
+		if p := m.providers[provider.id]; p != nil {
+			return p, true
+		}
+	}
+
+	return nil, false
+}
+
+func (c *Context) hasProvider(m *moduleInfo, provider *providerKey) bool {
+	validateProvider(c, m, provider)
+	if len(m.providers) > provider.id {
+		if p := m.providers[provider.id]; p != nil {
+			return true
+		}
+	}
+
+	return false
+}
+
+func validateProvider(c *Context, m *moduleInfo, provider *providerKey) {
 	if provider.mutator == "" {
 		if !m.finishedGenerateBuildActions {
 			panic(fmt.Sprintf("Can't get value of provider %s before GenerateBuildActions finished",
@@ -224,14 +246,6 @@ func (c *Context) provider(m *moduleInfo, provider *providerKey) (any, bool) {
 				provider.typ, provider.mutator))
 		}
 	}
-
-	if len(m.providers) > provider.id {
-		if p := m.providers[provider.id]; p != nil {
-			return p, true
-		}
-	}
-
-	return nil, false
 }
 
 func (c *Context) mutatorFinishedForModule(mutator *mutatorInfo, m *moduleInfo) bool {
