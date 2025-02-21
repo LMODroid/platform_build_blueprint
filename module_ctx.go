@@ -343,6 +343,9 @@ type BaseModuleContext interface {
 	// dependencies on the module being visited, it returns the dependency tag used for the current dependency.
 	OtherModuleDependencyTag(m Module) DependencyTag
 
+	// OtherModuleSubDir returns the string representing the variations of the module.
+	OtherModuleSubDir(m Module) string
+
 	// OtherModuleExists returns true if a module with the specified name exists, as determined by the NameInterface
 	// passed to Context.SetNameInterface, or SimpleNameInterface if it was not called.
 	OtherModuleExists(name string) bool
@@ -612,6 +615,10 @@ func (m *baseModuleContext) OtherModuleDependencyTag(logicModule Module) Depende
 	}
 
 	return nil
+}
+
+func (m *baseModuleContext) OtherModuleSubDir(logicModule Module) string {
+	return m.context.ModuleSubDir(getWrappedModule(logicModule))
 }
 
 func (m *baseModuleContext) ModuleFromName(name string) (Module, bool) {

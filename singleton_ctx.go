@@ -141,8 +141,13 @@ type SingletonContext interface {
 	VisitAllModuleVariantProxies(module Module, visit func(proxy ModuleProxy))
 
 	// PrimaryModule returns the first variant of the given module.  This can be used to perform
-	//	// singleton actions that are only done once for all variants of a module.
+	// singleton actions that are only done once for all variants of a module.
 	PrimaryModule(module Module) Module
+
+	// PrimaryModuleProxy returns the proxy of the first variant of the given module.
+	// This can be used to perform singleton actions that are only done once for
+	// all variants of a module.
+	PrimaryModuleProxy(module ModuleProxy) ModuleProxy
 
 	// IsFinalModule returns if the given module is the last variant. This can be used to perform
 	// singleton actions that are only done once for all variants of a module.
@@ -369,6 +374,10 @@ func (s *singletonContext) VisitDepsDepthFirstIf(module Module,
 
 func (s *singletonContext) PrimaryModule(module Module) Module {
 	return s.context.PrimaryModule(module)
+}
+
+func (s *singletonContext) PrimaryModuleProxy(module ModuleProxy) ModuleProxy {
+	return ModuleProxy{s.context.PrimaryModule(module.module)}
 }
 
 func (s *singletonContext) IsFinalModule(module Module) bool {
