@@ -222,7 +222,7 @@ func (s *singletonContext) ModuleProvider(logicModule Module, provider AnyProvid
 }
 
 func (s *singletonContext) BlueprintFile(logicModule Module) string {
-	return s.context.BlueprintFile(logicModule)
+	return s.context.BlueprintFile(getWrappedModule(logicModule))
 }
 
 func (s *singletonContext) error(err error) {
