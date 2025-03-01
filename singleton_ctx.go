@@ -171,7 +171,7 @@ type SingletonContext interface {
 
 	// ModuleVariantsFromName returns the list of module variants named `name` in the same namespace as `referer`.
 	// Allows generating build actions for `referer` based on the metadata for `name` deferred until the singleton context.
-	ModuleVariantsFromName(referer Module, name string) []Module
+	ModuleVariantsFromName(referer ModuleProxy, name string) []ModuleProxy
 
 	// HasMutatorFinished returns true if the given mutator has finished running.
 	// It will panic if given an invalid mutator name.
@@ -381,7 +381,7 @@ func (s *singletonContext) PrimaryModuleProxy(module ModuleProxy) ModuleProxy {
 }
 
 func (s *singletonContext) IsFinalModule(module Module) bool {
-	return s.context.IsFinalModule(module)
+	return s.context.IsFinalModule(getWrappedModule(module))
 }
 
 func (s *singletonContext) VisitAllModuleVariants(module Module, visit func(Module)) {
@@ -389,7 +389,7 @@ func (s *singletonContext) VisitAllModuleVariants(module Module, visit func(Modu
 }
 
 func (s *singletonContext) VisitAllModuleVariantProxies(module Module, visit func(proxy ModuleProxy)) {
-	s.context.VisitAllModuleVariants(module, visitProxyAdaptor(visit))
+	s.context.VisitAllModuleVariants(getWrappedModule(module), visitProxyAdaptor(visit))
 }
 
 func (s *singletonContext) AddNinjaFileDeps(deps ...string) {
@@ -405,10 +405,10 @@ func (s *singletonContext) Fs() pathtools.FileSystem {
 	return s.context.fs
 }
 
-func (s *singletonContext) ModuleVariantsFromName(referer Module, name string) []Module {
+func (s *singletonContext) ModuleVariantsFromName(referer ModuleProxy, name string) []ModuleProxy {
 	c := s.context
 
-	refererInfo := c.moduleInfo[referer]
+	refererInfo := c.moduleInfo[referer.module]
 	if refererInfo == nil {
 		s.ModuleErrorf(referer, "could not find module %q", referer.Name())
 		return nil
@@ -418,9 +418,11 @@ func (s *singletonContext) ModuleVariantsFromName(referer Module, name string) [
 	if !exists {
 		return nil
 	}
-	result := make([]Module, 0, len(moduleGroup.modules))
+	result := make([]ModuleProxy, 0, len(moduleGroup.modules))
 	for _, moduleInfo := range moduleGroup.modules {
-		result = append(result, moduleInfo.logicModule)
+		if moduleInfo.logicModule != nil {
+			result = append(result, ModuleProxy{moduleInfo.logicModule})
+		}
 	}
 	return result
 }
