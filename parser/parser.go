@@ -555,6 +555,12 @@ func (p *parser) parseSelect() Expression {
 			default:
 				p.errorf("Expected a string, true, false, or default, got %s", p.scanner.TokenText())
 			}
+		case scanner.Int:
+			if i := p.parseIntValue(); i != nil {
+				result.Value = i
+				return result
+			}
+			p.errorf("Expected a string, int, true, false, or default, got %s", p.scanner.TokenText())
 		case scanner.String:
 			if s := p.parseStringValue(); s != nil {
 				if strings.HasPrefix(s.Value, "__soong") {
@@ -566,7 +572,7 @@ func (p *parser) parseSelect() Expression {
 			}
 			fallthrough
 		default:
-			p.errorf("Expected a string, true, false, or default, got %s", p.scanner.TokenText())
+			p.errorf("Expected a string, int, true, false, or default, got %s", p.scanner.TokenText())
 		}
 		return result
 	}
@@ -634,6 +640,12 @@ func (p *parser) parseSelect() Expression {
 			}
 		case *Bool:
 			if b2, ok := b.Value.(*Bool); ok {
+				return a2.Value == b2.Value
+			} else {
+				return false
+			}
+		case *Int64:
+			if b2, ok := b.Value.(*Int64); ok {
 				return a2.Value == b2.Value
 			} else {
 				return false

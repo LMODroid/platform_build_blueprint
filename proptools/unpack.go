@@ -389,6 +389,28 @@ func (ctx *unpackContext) unpackToConfigurable(propertyName string, property *pa
 			postProcessors: &postProcessors,
 		}
 		return reflect.ValueOf(&result), true
+	case *parser.Int64:
+		if configuredType.Kind() != reflect.Int64 {
+			ctx.addError(&UnpackError{
+				fmt.Errorf("can't assign int64 value to configurable %s property %q",
+					configuredType.String(), property.Name),
+				property.Value.Pos(),
+			})
+			return reflect.New(configurableType), false
+		}
+		var postProcessors [][]postProcessor[int64]
+		result := Configurable[int64]{
+			propertyName: property.Name,
+			inner: &configurableInner[int64]{
+				single: singleConfigurable[int64]{
+					cases: []ConfigurableCase[int64]{{
+						value: v,
+					}},
+				},
+			},
+			postProcessors: &postProcessors,
+		}
+		return reflect.ValueOf(&result), true
 	case *parser.List:
 		if configuredType.Kind() != reflect.Slice {
 			ctx.addError(&UnpackError{
@@ -464,6 +486,9 @@ func (ctx *unpackContext) unpackToConfigurable(propertyName string, property *pa
 				case *parser.Bool:
 					patterns[i].typ = configurablePatternTypeBool
 					patterns[i].boolValue = pat.Value
+				case *parser.Int64:
+					patterns[i].typ = configurablePatternTypeInt64
+					patterns[i].int64Value = pat.Value
 				default:
 					panic("unimplemented")
 				}
