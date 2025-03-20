@@ -267,10 +267,15 @@ func ContainsConfigurable(value interface{}) bool {
 func containsConfigurableInternal(v reflect.Value, ptrs map[uintptr]bool) bool {
 	switch v.Kind() {
 	case reflect.Struct:
-		if IsConfigurable(v.Type()) {
+		t := v.Type()
+		if IsConfigurable(t) {
 			return true
 		}
+		typeFields := typeFields(t)
 		for i := 0; i < v.NumField(); i++ {
+			if HasTag(typeFields[i], "blueprint", "allow_configurable_in_provider") {
+				continue
+			}
 			if containsConfigurableInternal(v.Field(i), ptrs) {
 				return true
 			}
