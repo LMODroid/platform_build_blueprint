@@ -1172,8 +1172,8 @@ func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps
 	return depInfos
 }
 
-func (mctx *mutatorContext) AddReverseDependency(module Module, tag DependencyTag, destName string) {
-	if !mctx.mutator.usesReverseDependencies {
+func (m *mutatorContext) AddReverseDependency(module Module, tag DependencyTag, name string) {
+	if !m.mutator.usesReverseDependencies {
 		panic(fmt.Errorf("method AddReverseDependency called from mutator that was not marked UsesReverseDependencies"))
 	}
 
@@ -1181,24 +1181,13 @@ func (mctx *mutatorContext) AddReverseDependency(module Module, tag DependencyTa
 		panic("BaseDependencyTag is not allowed to be used directly!")
 	}
 
-	destModule, errs := mctx.context.findReverseDependency(mctx.context.moduleInfo[module], mctx.config, nil, destName)
-	if len(errs) > 0 {
-		mctx.errs = append(mctx.errs, errs...)
-		return
+	if module != m.module.logicModule {
+		panic(fmt.Errorf("AddReverseDependency called with module that is not the current module"))
 	}
-
-	if destModule == nil {
-		// allowMissingDependencies is true and the module wasn't found
-		return
-	}
-
-	mctx.reverseDeps = append(mctx.reverseDeps, reverseDep{
-		destModule,
-		depInfo{mctx.context.moduleInfo[module], tag},
-	})
+	m.AddReverseVariationDependency(nil, tag, name)
 }
 
-func (mctx *mutatorContext) AddReverseVariationDependency(variations []Variation, tag DependencyTag, destName string) {
+func (mctx *mutatorContext) AddReverseVariationDependency(variations []Variation, tag DependencyTag, name string) {
 	if !mctx.mutator.usesReverseDependencies {
 		panic(fmt.Errorf("method AddReverseVariationDependency called from mutator that was not marked UsesReverseDependencies"))
 	}
@@ -1207,19 +1196,40 @@ func (mctx *mutatorContext) AddReverseVariationDependency(variations []Variation
 		panic("BaseDependencyTag is not allowed to be used directly!")
 	}
 
-	destModule, errs := mctx.context.findReverseDependency(mctx.module, mctx.config, variations, destName)
-	if len(errs) > 0 {
+	possibleDeps := mctx.context.moduleGroupFromName(name, mctx.module.namespace())
+	if possibleDeps == nil {
+		mctx.errs = append(mctx.errs, &BlueprintError{
+			Err: fmt.Errorf("%q has a reverse dependency on undefined module %q",
+				mctx.module.Name(), name),
+			Pos: mctx.module.pos,
+		})
+		return
+	}
+
+	found, newVariant, errs := mctx.context.findVariant(mctx.module, mctx.config, possibleDeps, variations, false, true)
+	if errs != nil {
 		mctx.errs = append(mctx.errs, errs...)
 		return
 	}
 
-	if destModule == nil {
-		// allowMissingDependencies is true and the module wasn't found
+	if found == nil {
+		if mctx.context.allowMissingDependencies {
+			// Allow missing variants.
+			mctx.errs = append(mctx.errs, mctx.context.discoveredMissingDependencies(mctx.module, name, newVariant)...)
+		} else {
+			mctx.errs = append(mctx.errs, &BlueprintError{
+				Err: fmt.Errorf("reverse dependency %q of %q missing variant:\n  %s\navailable variants:\n  %s",
+					name, mctx.module.Name(),
+					mctx.context.prettyPrintVariant(newVariant),
+					mctx.context.prettyPrintGroupVariants(possibleDeps)),
+				Pos: mctx.module.pos,
+			})
+		}
 		return
 	}
 
 	mctx.reverseDeps = append(mctx.reverseDeps, reverseDep{
-		destModule,
+		found,
 		depInfo{mctx.module, tag},
 	})
 }

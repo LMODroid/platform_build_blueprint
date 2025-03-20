@@ -1950,43 +1950,6 @@ func blueprintDepsMutator(ctx BottomUpMutatorContext) {
 	}
 }
 
-func (c *Context) findReverseDependency(module *moduleInfo, config any, requestedVariations []Variation, destName string) (*moduleInfo, []error) {
-	if destName == module.Name() {
-		return nil, []error{&BlueprintError{
-			Err: fmt.Errorf("%q depends on itself", destName),
-			Pos: module.pos,
-		}}
-	}
-
-	possibleDeps := c.moduleGroupFromName(destName, module.namespace())
-	if possibleDeps == nil {
-		return nil, []error{&BlueprintError{
-			Err: fmt.Errorf("%q has a reverse dependency on undefined module %q",
-				module.Name(), destName),
-			Pos: module.pos,
-		}}
-	}
-
-	if m, _, errs := c.findVariant(module, config, possibleDeps, requestedVariations, false, true); errs != nil {
-		return nil, errs
-	} else if m != nil {
-		return m, nil
-	}
-
-	if c.allowMissingDependencies {
-		// Allow missing variants.
-		return nil, c.discoveredMissingDependencies(module, destName, module.variant.variations)
-	}
-
-	return nil, []error{&BlueprintError{
-		Err: fmt.Errorf("reverse dependency %q of %q missing variant:\n  %s\navailable variants:\n  %s",
-			destName, module.Name(),
-			c.prettyPrintVariant(module.variant.variations),
-			c.prettyPrintGroupVariants(possibleDeps)),
-		Pos: module.pos,
-	}}
-}
-
 // applyTransitions takes a variationMap being used to add a dependency on a module in a moduleGroup
 // and applies the OutgoingTransition and IncomingTransition methods of each completed TransitionMutator to
 // modify the requested variation.  It finds a variant that existed before the TransitionMutator ran that is
