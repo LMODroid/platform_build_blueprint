@@ -1284,11 +1284,11 @@ func (mctx *mutatorContext) ReplaceDependenciesIf(name string, predicate Replace
 	targets := mctx.context.moduleVariantsThatDependOn(name, mctx.module)
 
 	if len(targets) == 0 {
-		panic(fmt.Errorf("ReplaceDependencies could not find identical variant {%s} for module %s\n"+
-			"available variants:\n  %s",
-			mctx.context.prettyPrintVariant(mctx.module.variant.variations),
+		panic(fmt.Errorf("ReplaceDependenciesIf could not find variant of %s that depends on %s variant %s",
 			name,
-			mctx.context.prettyPrintGroupVariants(mctx.context.moduleGroupFromName(name, mctx.module.namespace()))))
+			mctx.module.group.name,
+			mctx.context.prettyPrintVariant(mctx.module.variant.variations),
+		))
 	}
 
 	for _, target := range targets {
