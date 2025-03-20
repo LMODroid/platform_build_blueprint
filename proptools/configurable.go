@@ -52,7 +52,7 @@ func (o *ConfigurableOptional[T]) GetOrDefault(other T) T {
 }
 
 type ConfigurableElements interface {
-	string | bool | []string
+	string | bool | []string | int64
 }
 
 type ConfigurableEvaluator interface {
@@ -127,6 +127,7 @@ type configurableValueType int
 const (
 	configurableValueTypeString configurableValueType = iota
 	configurableValueTypeBool
+	configurableValueTypeInt64
 	configurableValueTypeUndefined
 	configurableValueTypeStringList
 )
@@ -137,6 +138,8 @@ func (v *configurableValueType) patternType() configurablePatternType {
 		return configurablePatternTypeString
 	case configurableValueTypeBool:
 		return configurablePatternTypeBool
+	case configurableValueTypeInt64:
+		return configurablePatternTypeInt64
 	case configurableValueTypeStringList:
 		return configurablePatternTypeStringList
 	default:
@@ -150,6 +153,8 @@ func (v *configurableValueType) String() string {
 		return "string"
 	case configurableValueTypeBool:
 		return "bool"
+	case configurableValueTypeInt64:
+		return "int"
 	case configurableValueTypeStringList:
 		return "string_list"
 	case configurableValueTypeUndefined:
@@ -165,6 +170,7 @@ type ConfigurableValue struct {
 	typ             configurableValueType
 	stringValue     string
 	boolValue       bool
+	int64Value      int64
 	stringListValue []string
 }
 
@@ -174,6 +180,8 @@ func (c *ConfigurableValue) toExpression() parser.Expression {
 		return &parser.Bool{Value: c.boolValue}
 	case configurableValueTypeString:
 		return &parser.String{Value: c.stringValue}
+	case configurableValueTypeInt64:
+		return &parser.Int64{Value: c.int64Value}
 	case configurableValueTypeStringList:
 		result := &parser.List{}
 		for _, s := range c.stringListValue {
@@ -195,6 +203,8 @@ func (c *ConfigurableValue) String() string {
 		} else {
 			return "false"
 		}
+	case configurableValueTypeInt64:
+		return strconv.FormatInt(c.int64Value, 10)
 	case configurableValueTypeUndefined:
 		return "undefined"
 	default:
@@ -216,6 +226,13 @@ func ConfigurableValueBool(b bool) ConfigurableValue {
 	}
 }
 
+func ConfigurableValueInt(i int64) ConfigurableValue {
+	return ConfigurableValue{
+		typ:        configurableValueTypeInt64,
+		int64Value: i,
+	}
+}
+
 func ConfigurableValueStringList(l []string) ConfigurableValue {
 	return ConfigurableValue{
 		typ:             configurableValueTypeStringList,
@@ -234,6 +251,7 @@ type configurablePatternType int
 const (
 	configurablePatternTypeString configurablePatternType = iota
 	configurablePatternTypeBool
+	configurablePatternTypeInt64
 	configurablePatternTypeStringList
 	configurablePatternTypeDefault
 	configurablePatternTypeAny
@@ -245,6 +263,8 @@ func (v *configurablePatternType) String() string {
 		return "string"
 	case configurablePatternTypeBool:
 		return "bool"
+	case configurablePatternTypeInt64:
+		return "int64"
 	case configurablePatternTypeStringList:
 		return "string_list"
 	case configurablePatternTypeDefault:
@@ -270,6 +290,7 @@ type ConfigurablePattern struct {
 	typ         configurablePatternType
 	stringValue string
 	boolValue   bool
+	int64Value  int64
 	binding     string
 }
 
@@ -283,6 +304,11 @@ func (c ConfigurablePattern) toParserSelectPattern() parser.SelectPattern {
 	case configurablePatternTypeBool:
 		return parser.SelectPattern{
 			Value:   &parser.Bool{Value: c.boolValue},
+			Binding: parser.Variable{Name: c.binding},
+		}
+	case configurablePatternTypeInt64:
+		return parser.SelectPattern{
+			Value:   &parser.Int64{Value: c.int64Value},
 			Binding: parser.Variable{Name: c.binding},
 		}
 	case configurablePatternTypeDefault:
@@ -338,6 +364,8 @@ func (p *ConfigurablePattern) matchesValue(v ConfigurableValue) bool {
 		return p.stringValue == v.stringValue
 	case configurablePatternTypeBool:
 		return p.boolValue == v.boolValue
+	case configurablePatternTypeInt64:
+		return p.int64Value == v.int64Value
 	default:
 		panic("unimplemented")
 	}
@@ -426,6 +454,8 @@ func configurableCaseType(configuredType reflect.Type) reflect.Type {
 		return reflect.TypeOf(ConfigurableCase[string]{})
 	case reflect.Bool:
 		return reflect.TypeOf(ConfigurableCase[bool]{})
+	case reflect.Int64:
+		return reflect.TypeOf(ConfigurableCase[int64]{})
 	case reflect.Slice:
 		switch configuredType.Elem().Kind() {
 		case reflect.String:
@@ -1218,6 +1248,12 @@ func expressionToConfiguredValue[T ConfigurableElements](expr parser.Expression,
 		} else {
 			return nil, fmt.Errorf("can't assign bool value to %s property", configuredTypeToString[T]())
 		}
+	case *parser.Int64:
+		if result, ok := any(&e.Value).(*T); ok {
+			return result, nil
+		} else {
+			return nil, fmt.Errorf("can't assign int64 value to %s property", configuredTypeToString[T]())
+		}
 	case *parser.List:
 		result := make([]string, 0, len(e.Values))
 		for _, x := range e.Values {
@@ -1263,6 +1299,8 @@ func configuredTypeToString[T ConfigurableElements]() string {
 		return "string"
 	case bool:
 		return "bool"
+	case int64:
+		return "int64"
 	case []string:
 		return "list of strings"
 	default:

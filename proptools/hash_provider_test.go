@@ -168,6 +168,45 @@ type nestableStruct struct {
 	foo interface{}
 }
 
+func TestContainsConfigurable(t *testing.T) {
+	testCases := []struct {
+		name   string
+		value  any
+		result bool
+	}{
+		{
+			name: "struct without configurable",
+			value: struct {
+				S string
+			}{},
+			result: false,
+		},
+		{
+			name: "struct with configurable",
+			value: struct {
+				S Configurable[string]
+			}{},
+			result: true,
+		},
+		{
+			name: "struct with allowed configurable",
+			value: struct {
+				S Configurable[string] `blueprint:"allow_configurable_in_provider"`
+			}{},
+			result: false,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := ContainsConfigurable(testCase.value)
+			if got != testCase.result {
+				t.Errorf("expected %v, got %v", testCase.value, got)
+			}
+		})
+	}
+}
+
 func BenchmarkCalculateHash(b *testing.B) {
 	for _, testCase := range hashTestCases {
 		b.Run(testCase.name, func(b *testing.B) {

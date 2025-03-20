@@ -62,6 +62,10 @@ func (hasher *hasher) writeUint64(i uint64) {
 	hasher.Write(hasher.int64Buf)
 }
 
+func (hasher *hasher) writeInt(i int) {
+	hasher.writeUint64(uint64(i))
+}
+
 func (hasher *hasher) writeByte(i byte) {
 	hasher.int64Buf[0] = i
 	hasher.Write(hasher.int64Buf[:1])
@@ -95,8 +99,9 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 	v.IsValid()
 	switch v.Kind() {
 	case reflect.Struct:
-		hasher.writeUint64(uint64(v.NumField()))
-		for i := 0; i < v.NumField(); i++ {
+		l := v.NumField()
+		hasher.writeInt(l)
+		for i := 0; i < l; i++ {
 			hasher.Write(recordSeparator)
 			err := hasher.calculateHash(v.Field(i))
 			if err != nil {
@@ -104,9 +109,10 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 			}
 		}
 	case reflect.Map:
-		hasher.writeUint64(uint64(v.Len()))
+		l := v.Len()
+		hasher.writeInt(l)
 		iter := v.MapRange()
-		s := hasher.getMapState(v.Len())
+		s := hasher.getMapState(l)
 		for i := 0; iter.Next(); i++ {
 			s.indexes[i] = i
 			s.keys[i] = iter.Key()
@@ -115,7 +121,7 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 		slices.SortFunc(s.indexes, func(i, j int) int {
 			return compare_values(s.keys[i], s.keys[j])
 		})
-		for i := 0; i < v.Len(); i++ {
+		for i := 0; i < l; i++ {
 			hasher.Write(recordSeparator)
 			err := hasher.calculateHash(s.keys[s.indexes[i]])
 			if err != nil {
@@ -129,8 +135,9 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 		}
 		hasher.putMapState(s)
 	case reflect.Slice, reflect.Array:
-		hasher.writeUint64(uint64(v.Len()))
-		for i := 0; i < v.Len(); i++ {
+		l := v.Len()
+		hasher.writeInt(l)
+		for i := 0; i < l; i++ {
 			hasher.Write(recordSeparator)
 			err := hasher.calculateHash(v.Index(i))
 			if err != nil {
@@ -143,7 +150,7 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 			return nil
 		}
 		// Hardcoded value to indicate it is a pointer
-		hasher.writeUint64(uint64(0x55))
+		hasher.writeInt(0x55)
 		addr := v.Pointer()
 		if hasher.ptrs == nil {
 			hasher.ptrs = make(map[uintptr]bool)
@@ -219,14 +226,16 @@ func compare_values(x, y reflect.Value) int {
 	case reflect.Pointer:
 		return cmp.Compare(x.Pointer(), y.Pointer())
 	case reflect.Array:
-		for i := 0; i < x.Len(); i++ {
+		l := x.Len()
+		for i := 0; i < l; i++ {
 			if result := compare_values(x.Index(i), y.Index(i)); result != 0 {
 				return result
 			}
 		}
 		return 0
 	case reflect.Struct:
-		for i := 0; i < x.NumField(); i++ {
+		l := x.NumField()
+		for i := 0; i < l; i++ {
 			if result := compare_values(x.Field(i), y.Field(i)); result != 0 {
 				return result
 			}
@@ -258,10 +267,15 @@ func ContainsConfigurable(value interface{}) bool {
 func containsConfigurableInternal(v reflect.Value, ptrs map[uintptr]bool) bool {
 	switch v.Kind() {
 	case reflect.Struct:
-		if IsConfigurable(v.Type()) {
+		t := v.Type()
+		if IsConfigurable(t) {
 			return true
 		}
+		typeFields := typeFields(t)
 		for i := 0; i < v.NumField(); i++ {
+			if HasTag(typeFields[i], "blueprint", "allow_configurable_in_provider") {
+				continue
+			}
 			if containsConfigurableInternal(v.Field(i), ptrs) {
 				return true
 			}
@@ -279,7 +293,8 @@ func containsConfigurableInternal(v reflect.Value, ptrs map[uintptr]bool) bool {
 			}
 		}
 	case reflect.Slice, reflect.Array:
-		for i := 0; i < v.Len(); i++ {
+		l := v.Len()
+		for i := 0; i < l; i++ {
 			if containsConfigurableInternal(v.Index(i), ptrs) {
 				return true
 			}
