@@ -750,7 +750,7 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 				if !strings.HasPrefix(str, "dedup-") {
 					continue
 				}
-				orderOnlyStrings, ok := m.context.orderOnlyStringsFromCache[str]
+				orderOnlyStrings, ok := m.context.orderOnlyStringsCache[str]
 				if !ok {
 					panic(fmt.Errorf("no cached value found for order only dep: %s", str))
 				}

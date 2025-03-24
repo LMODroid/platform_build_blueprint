@@ -1512,7 +1512,7 @@ func incrementalSetup(t *testing.T) *Context {
 	return bpSetup(t, bp)
 }
 
-func incrementalSetupForRestore(ctx *Context, t *testing.T, orderOnlyStrings []string) any {
+func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
 	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
 
@@ -1549,7 +1549,7 @@ func incrementalSetupForRestore(ctx *Context, t *testing.T, orderOnlyStrings []s
 	}
 	ctx.SetIncrementalEnabled(true)
 	ctx.SetIncrementalAnalysis(true)
-	ctx.buildActionsFromCache = toCache
+	ctx.buildActionsCache = toCache
 
 	return providerValue
 }
@@ -1584,18 +1584,18 @@ func TestCacheBuildActions(t *testing.T) {
 		}
 		t.FailNow()
 	}
-	modules := make([]*moduleInfo, 0, len(ctx.moduleInfo))
-	for _, module := range ctx.moduleInfo {
-		modules = append(modules, module)
-	}
-	ctx.deduplicateOrderOnlyDeps(modules)
+
+	buf := bytes.NewBuffer(nil)
+	w := newNinjaWriter(buf)
+	ctx.writeAllModuleActions(w, true, "test.ninja")
+
 	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
 	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
-	if len(ctx.buildActionsToCache) != 1 {
+	if len(ctx.buildActionsCache) != 1 {
 		t.Errorf("build actions are not cached for the incremental module")
 	}
 	cacheKey := calculateHashKey(incInfo, [][]uint64{barInfo.providerInitialValueHashes})
-	cache := ctx.buildActionsToCache[cacheKey]
+	cache := ctx.buildActionsCache[cacheKey]
 	if cache == nil {
 		t.Errorf("failed to find cached build actions for the incremental module")
 	}
@@ -1620,7 +1620,7 @@ func TestCacheBuildActions(t *testing.T) {
 
 func TestRestoreBuildActions(t *testing.T) {
 	ctx := incrementalSetup(t)
-	providerValue := incrementalSetupForRestore(ctx, t, nil)
+	providerValue := incrementalSetupForRestore(ctx, nil)
 	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
 	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
 	_, errs := ctx.PrepareBuildActions(nil)
@@ -1646,7 +1646,7 @@ func TestRestoreBuildActions(t *testing.T) {
 
 func TestSkipNinjaForCacheHit(t *testing.T) {
 	ctx := incrementalSetup(t)
-	incrementalSetupForRestore(ctx, t, nil)
+	incrementalSetupForRestore(ctx, nil)
 	_, errs := ctx.PrepareBuildActions(nil)
 	if len(errs) > 0 {
 		t.Errorf("unexpected errors calling generateModuleBuildActions:")
@@ -1749,9 +1749,9 @@ func TestOrderOnlyStringsRestoring(t *testing.T) {
 	phony := "dedup-d479e9a8133ff998"
 	orderOnlyStrings := []string{phony}
 	ctx := incrementalSetup(t)
-	incrementalSetupForRestore(ctx, t, orderOnlyStrings)
-	ctx.orderOnlyStringsFromCache = make(OrderOnlyStringsCache)
-	ctx.orderOnlyStringsFromCache[phony] = []string{"test.lib"}
+	incrementalSetupForRestore(ctx, orderOnlyStrings)
+	ctx.orderOnlyStringsCache = make(OrderOnlyStringsCache)
+	ctx.orderOnlyStringsCache[phony] = []string{"test.lib"}
 	_, errs := ctx.PrepareBuildActions(nil)
 	if len(errs) > 0 {
 		t.Errorf("unexpected errors calling generateModuleBuildActions:")
@@ -1776,6 +1776,10 @@ func TestOrderOnlyStringsRestoring(t *testing.T) {
 	if strings.Count(buf.String(), expected) != 1 {
 		t.Errorf("only one phony target should be found: %s", buf.String())
 	}
+
+	if len(ctx.orderOnlyStringsCache) != 1 {
+		t.Errorf("Phony target should be cached: %s", buf.String())
+	}
 }
 
 func TestOrderOnlyStringsValidWhenOnlyRestoredModuleUseIt(t *testing.T) {
@@ -1795,9 +1799,9 @@ func TestOrderOnlyStringsValidWhenOnlyRestoredModuleUseIt(t *testing.T) {
 		`
 
 	ctx := bpSetup(t, bp)
-	incrementalSetupForRestore(ctx, t, orderOnlyStrings)
-	ctx.orderOnlyStringsFromCache = make(OrderOnlyStringsCache)
-	ctx.orderOnlyStringsFromCache[phony] = []string{"test.lib"}
+	incrementalSetupForRestore(ctx, orderOnlyStrings)
+	ctx.orderOnlyStringsCache = make(OrderOnlyStringsCache)
+	ctx.orderOnlyStringsCache[phony] = []string{"test.lib"}
 	_, errs := ctx.PrepareBuildActions(nil)
 	if len(errs) > 0 {
 		t.Errorf("unexpected errors calling generateModuleBuildActions:")
@@ -1822,6 +1826,52 @@ func TestOrderOnlyStringsValidWhenOnlyRestoredModuleUseIt(t *testing.T) {
 	if strings.Count(buf.String(), expected) != 1 {
 		t.Errorf("only one phony target should be found: %s", buf.String())
 	}
+
+	if len(ctx.orderOnlyStringsCache) != 1 {
+		t.Errorf("Phony target should be cached: %s", buf.String())
+	}
+}
+
+func TestCachedModuleRemoved(t *testing.T) {
+	phony := "dedup-d479e9a8133ff998"
+	orderOnlyStrings := []string{phony}
+	ctx := incrementalSetup(t)
+	incrementalSetupForRestore(ctx, orderOnlyStrings)
+	bp := `
+			bar_module {
+					name: "MyBarModule",
+					outputs: ["MyBarModule_phony_output"],
+					order_only: ["test.lib"],
+			}
+		`
+	ctx = bpSetup(t, bp)
+	ctx.orderOnlyStringsCache = make(OrderOnlyStringsCache)
+	ctx.orderOnlyStringsCache[phony] = []string{"test.lib"}
+	_, errs := ctx.PrepareBuildActions(nil)
+	if len(errs) > 0 {
+		t.Errorf("unexpected errors calling generateModuleBuildActions:")
+		for _, err := range errs {
+			t.Errorf("  %s", err)
+		}
+		t.FailNow()
+	}
+
+	buf := bytes.NewBuffer(nil)
+	w := newNinjaWriter(buf)
+	ctx.writeAllModuleActions(w, true, "test.ninja")
+
+	// Verify dedup-d479e9a8133ff998 is no longer written to the common ninja file
+	// because MyIncrementalModule was removed so only MyBarModule still use it.
+	expected := strings.Join([]string{"build", phony + ":", "phony", "test.lib"}, " ")
+	if strings.Count(buf.String(), expected) != 0 {
+		t.Errorf("Phony target should not be present in ninja file: %s", buf.String())
+	}
+	if len(ctx.orderOnlyStringsCache) != 0 {
+		t.Errorf("Phony target should not be cached: %s", buf.String())
+	}
+	if len(ctx.buildActionsCache) != 0 {
+		t.Errorf("No module should be cached: %v", ctx.buildActionsCache)
+	}
 }
 
 // This tests the scenario where one restored module and two non-restored modules
@@ -1832,9 +1882,9 @@ func TestSharedOrderOnlyStringsRestoringNoDuplicates(t *testing.T) {
 	phony := "dedup-d479e9a8133ff998"
 	orderOnlyStrings := []string{phony}
 	ctx := incrementalSetup(t)
-	incrementalSetupForRestore(ctx, t, orderOnlyStrings)
-	ctx.orderOnlyStringsFromCache = make(OrderOnlyStringsCache)
-	ctx.orderOnlyStringsFromCache[phony] = []string{"test.lib"}
+	incrementalSetupForRestore(ctx, orderOnlyStrings)
+	ctx.orderOnlyStringsCache = make(OrderOnlyStringsCache)
+	ctx.orderOnlyStringsCache[phony] = []string{"test.lib"}
 
 	_, errs := ctx.PrepareBuildActions(nil)
 	if len(errs) > 0 {
@@ -1861,6 +1911,10 @@ func TestSharedOrderOnlyStringsRestoringNoDuplicates(t *testing.T) {
 	if strings.Count(buf.String(), expected) != 1 {
 		t.Errorf("only one phony target should be found: %s", buf.String())
 	}
+
+	if len(ctx.orderOnlyStringsCache) != 1 {
+		t.Errorf("Phony target should be cached: %s", buf.String())
+	}
 }
 
 func verifyBuildDefsShouldContain(t *testing.T, module *moduleInfo, expected string) {
@@ -1879,15 +1933,15 @@ func verifyBuildDefsShouldContain(t *testing.T, module *moduleInfo, expected str
 func verifyOrderOnlyStringsCache(t *testing.T, ctx *Context, incInfo, barInfo *moduleInfo) {
 	// Verify that soong cache all the order only strings that are used by the
 	// incremental modules
-	ok, key := mapContainsValue(ctx.orderOnlyStringsToCache, "test.lib")
+	ok, key := mapContainsValue(ctx.orderOnlyStringsCache, "test.lib")
 	if !ok {
-		t.Errorf("no order only strings used by incremetnal modules cached: %v", ctx.orderOnlyStringsToCache)
+		t.Errorf("no order only strings used by incremetnal modules cached: %v", ctx.orderOnlyStringsCache)
 	}
 
 	// Verify that the dedup-* order only strings used by MyIncrementalModule is
 	// cached along with its other cached values
 	cacheKey := calculateHashKey(incInfo, [][]uint64{barInfo.providerInitialValueHashes})
-	cache := ctx.buildActionsToCache[cacheKey]
+	cache := ctx.buildActionsCache[cacheKey]
 	if cache == nil {
 		t.Errorf("failed to find cached build actions for the incremental module")
 	}

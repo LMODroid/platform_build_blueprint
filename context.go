@@ -178,12 +178,10 @@ type Context struct {
 	// latter will depend on the flag above.
 	incrementalEnabled bool
 
-	buildActionsToCache       BuildActionCache
-	buildActionsToCacheLock   sync.Mutex
-	buildActionsFromCache     BuildActionCache
-	orderOnlyStringsFromCache OrderOnlyStringsCache
-	orderOnlyStringsToCache   OrderOnlyStringsCache
-	orderOnlyStrings          syncmap.SyncMap[uniquelist.UniqueList[string], *orderOnlyStringsInfo]
+	buildActionsCache       BuildActionCache
+	buildActionsToCacheLock sync.Mutex
+	orderOnlyStringsCache   OrderOnlyStringsCache
+	orderOnlyStrings        syncmap.SyncMap[uniquelist.UniqueList[string], *orderOnlyStringsInfo]
 }
 
 type orderOnlyStringsInfo struct {
@@ -591,22 +589,22 @@ type mutatorInfo struct {
 func newContext() *Context {
 	eventHandler := metrics.EventHandler{}
 	return &Context{
-		Context:                 context.Background(),
-		EventHandler:            &eventHandler,
-		moduleFactories:         make(map[string]ModuleFactory),
-		nameInterface:           NewSimpleNameInterface(),
-		moduleInfo:              make(map[Module]*moduleInfo),
-		globs:                   make(map[globKey]pathtools.GlobResult),
-		fs:                      pathtools.OsFs,
-		includeTags:             &IncludeTags{},
-		sourceRootDirs:          &SourceRootDirs{},
-		outDir:                  nil,
-		requiredNinjaMajor:      1,
-		requiredNinjaMinor:      7,
-		requiredNinjaMicro:      0,
-		buildActionsToCache:     make(BuildActionCache),
-		orderOnlyStringsToCache: make(OrderOnlyStringsCache),
-		orderOnlyStrings:        syncmap.SyncMap[uniquelist.UniqueList[string], *orderOnlyStringsInfo]{},
+		Context:               context.Background(),
+		EventHandler:          &eventHandler,
+		moduleFactories:       make(map[string]ModuleFactory),
+		nameInterface:         NewSimpleNameInterface(),
+		moduleInfo:            make(map[Module]*moduleInfo),
+		globs:                 make(map[globKey]pathtools.GlobResult),
+		fs:                    pathtools.OsFs,
+		includeTags:           &IncludeTags{},
+		sourceRootDirs:        &SourceRootDirs{},
+		outDir:                nil,
+		requiredNinjaMajor:    1,
+		requiredNinjaMinor:    7,
+		requiredNinjaMicro:    0,
+		buildActionsCache:     make(BuildActionCache),
+		orderOnlyStringsCache: make(OrderOnlyStringsCache),
+		orderOnlyStrings:      syncmap.SyncMap[uniquelist.UniqueList[string], *orderOnlyStringsInfo]{},
 	}
 }
 
@@ -749,20 +747,20 @@ func (c *Context) updateBuildActionsCache(key *BuildActionCacheKey, data *BuildA
 	if key != nil {
 		c.buildActionsToCacheLock.Lock()
 		defer c.buildActionsToCacheLock.Unlock()
-		c.buildActionsToCache[*key] = data
+		c.buildActionsCache[*key] = data
 	}
 }
 
 func (c *Context) getBuildActionsFromCache(key *BuildActionCacheKey) *BuildActionCachedData {
-	if c.buildActionsFromCache != nil && key != nil {
-		return c.buildActionsFromCache[*key]
+	if c.buildActionsCache != nil && key != nil {
+		return c.buildActionsCache[*key]
 	}
 	return nil
 }
 
 func (c *Context) CacheAllBuildActions(soongOutDir string) error {
-	return errors.Join(writeToCache(c, soongOutDir, BuildActionsCacheFile, &c.buildActionsToCache),
-		writeToCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsToCache))
+	return errors.Join(writeToCache(c, soongOutDir, BuildActionsCacheFile, &c.buildActionsCache),
+		writeToCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsCache))
 }
 
 func writeToCache[T any](ctx *Context, soongOutDir string, fileName string, data *T) error {
@@ -778,10 +776,8 @@ func writeToCache[T any](ctx *Context, soongOutDir string, fileName string, data
 }
 
 func (c *Context) RestoreAllBuildActions(soongOutDir string) error {
-	c.buildActionsFromCache = make(BuildActionCache)
-	c.orderOnlyStringsFromCache = make(OrderOnlyStringsCache)
-	return errors.Join(restoreFromCache(c, soongOutDir, BuildActionsCacheFile, &c.buildActionsFromCache),
-		restoreFromCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsFromCache))
+	return errors.Join(restoreFromCache(c, soongOutDir, BuildActionsCacheFile, &c.buildActionsCache),
+		restoreFromCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsCache))
 }
 
 func restoreFromCache[T any](ctx *Context, soongOutDir string, fileName string, data *T) error {
@@ -4671,6 +4667,8 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 	if err != nil {
 		return err
 	}
+
+	c.buildActionsCache = make(BuildActionCache)
 	for _, module := range modules {
 		moduleFile := filepath.Join(ninjaPath, module.ModuleCacheKey()+".ninja")
 		if !module.incrementalRestored {
@@ -4688,6 +4686,9 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 			if err != nil {
 				return err
 			}
+		}
+		if module.buildActionCacheKey != nil {
+			c.cacheModuleBuildActions(module)
 		}
 		bWriter.Subninja(moduleFile)
 	}
@@ -4842,6 +4843,7 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 	defer c.EndEvent("deduplicate_order_only_deps")
 
 	var phonys []*buildDef
+	c.orderOnlyStringsCache = make(OrderOnlyStringsCache)
 	c.orderOnlyStrings.Range(func(key uniquelist.UniqueList[string], info *orderOnlyStringsInfo) bool {
 		if info.dedup {
 			dedup := fmt.Sprintf("dedup-%x", keyForPhonyCandidate(key.ToSlice()))
@@ -4853,7 +4855,7 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 			info.dedupName = dedup
 			phonys = append(phonys, phony)
 			if info.incremental {
-				c.orderOnlyStringsToCache[phony.OutputStrings[0]] = phony.InputStrings
+				c.orderOnlyStringsCache[phony.OutputStrings[0]] = phony.InputStrings
 			}
 		}
 		return true
@@ -4869,10 +4871,6 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 					}
 				}
 			}
-			if m.buildActionCacheKey != nil {
-				c.cacheModuleBuildActions(m)
-			}
-
 			return false
 		})
 
