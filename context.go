@@ -49,6 +49,8 @@ import (
 	"github.com/google/blueprint/pathtools"
 	"github.com/google/blueprint/pool"
 	"github.com/google/blueprint/proptools"
+	"github.com/google/blueprint/syncmap"
+	"github.com/google/blueprint/uniquelist"
 )
 
 var ErrBuildActionsNotReady = errors.New("build actions are not ready")
@@ -181,6 +183,13 @@ type Context struct {
 	buildActionsFromCache     BuildActionCache
 	orderOnlyStringsFromCache OrderOnlyStringsCache
 	orderOnlyStringsToCache   OrderOnlyStringsCache
+	orderOnlyStrings          syncmap.SyncMap[uniquelist.UniqueList[string], *orderOnlyStringsInfo]
+}
+
+type orderOnlyStringsInfo struct {
+	dedup       bool
+	incremental bool
+	dedupName   string
 }
 
 // A container for String keys. The keys can be used to gate build graph traversal
@@ -446,9 +455,17 @@ func (module *moduleInfo) ModuleCacheKey() string {
 	if variant == "" {
 		variant = "none"
 	}
-	return fmt.Sprintf("%s-%s-%s-%s",
-		strings.ReplaceAll(filepath.Dir(module.relBlueprintsFile), "/", "."),
-		module.Name(), variant, module.typeName)
+	return calculateFileNameHash(fmt.Sprintf("%s-%s-%s-%s",
+		filepath.Dir(module.relBlueprintsFile), module.Name(), variant, module.typeName))
+
+}
+
+func calculateFileNameHash(name string) string {
+	hash, err := proptools.CalculateHash(name)
+	if err != nil {
+		panic(newPanicErrorf(err, "failed to calculate hash for file name: %s", name))
+	}
+	return strconv.FormatUint(hash, 16)
 }
 
 func (c *Context) setModuleTransitionInfo(module *moduleInfo, t *transitionMutatorImpl, info TransitionInfo) {
@@ -589,6 +606,7 @@ func newContext() *Context {
 		requiredNinjaMicro:      0,
 		buildActionsToCache:     make(BuildActionCache),
 		orderOnlyStringsToCache: make(OrderOnlyStringsCache),
+		orderOnlyStrings:        syncmap.SyncMap[uniquelist.UniqueList[string], *orderOnlyStringsInfo]{},
 	}
 }
 
@@ -3317,12 +3335,8 @@ func (c *Context) generateModuleBuildActions(config interface{},
 						}
 					}
 				}()
-				restored, cacheKey := mctx.restoreModuleBuildActions()
-				if !restored {
+				if !mctx.restoreModuleBuildActions() {
 					mctx.module.logicModule.GenerateBuildActions(mctx)
-				}
-				if cacheKey != nil {
-					mctx.cacheModuleBuildActions(cacheKey)
 				}
 			}()
 
@@ -4541,23 +4555,20 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	c.BeginEvent("modules")
 	defer c.EndEvent("modules")
 
-	modules := make([]*moduleInfo, 0, len(c.moduleInfo))
-	incrementalModules := make([]*moduleInfo, 0, 200)
+	var modules []*moduleInfo
+	var incModules []*moduleInfo
 
 	for _, module := range c.moduleInfo {
 		if module.buildActionCacheKey != nil {
-			incrementalModules = append(incrementalModules, module)
+			incModules = append(incModules, module)
 			continue
 		}
 		modules = append(modules, module)
 	}
 	sort.Sort(moduleSorter{modules, c.nameInterface})
-	sort.Sort(moduleSorter{incrementalModules, c.nameInterface})
+	sort.Sort(moduleSorter{incModules, c.nameInterface})
 
-	phonys := c.deduplicateOrderOnlyDeps(append(modules, incrementalModules...))
-	if err := orderOnlyForIncremental(c, incrementalModules, phonys); err != nil {
-		return err
-	}
+	phonys := c.deduplicateOrderOnlyDeps(append(modules, incModules...))
 
 	c.EventHandler.Do("sort_phony_builddefs", func() {
 		// sorting for determinism, the phony output names are stable
@@ -4620,7 +4631,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				err := writeIncrementalModules(c, file, incrementalModules, headerTemplate)
+				err := writeIncrementalModules(c, file, incModules, headerTemplate)
 				if err != nil {
 					errorCh <- err
 				}
@@ -4646,69 +4657,6 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	}
 }
 
-func orderOnlyForIncremental(c *Context, modules []*moduleInfo, phonys *localBuildActions) error {
-	for _, mod := range modules {
-		// find the order only strings of the incremental module, it can come from
-		// the cache or from buildDefs depending on if the module was skipped or not.
-		var orderOnlyStrings []string
-		if mod.incrementalRestored {
-			orderOnlyStrings = mod.orderOnlyStrings
-		} else {
-			for _, b := range mod.actionDefs.buildDefs {
-				// We do similar check when creating phonys in deduplicateOrderOnlyDeps as well
-				if len(b.OrderOnly) > 0 {
-					return fmt.Errorf("order only shouldn't be used: %s", mod.Name())
-				}
-				for _, str := range b.OrderOnlyStrings {
-					if strings.HasPrefix(str, "dedup-") {
-						orderOnlyStrings = append(orderOnlyStrings, str)
-					}
-				}
-			}
-		}
-
-		if len(orderOnlyStrings) == 0 {
-			continue
-		}
-
-		// update the order only string cache with the info found above.
-		if data, ok := c.buildActionsToCache[*mod.buildActionCacheKey]; ok {
-			data.OrderOnlyStrings = orderOnlyStrings
-		}
-
-		if !mod.incrementalRestored {
-			continue
-		}
-
-		// if the module is skipped, the order only string that we restored from the
-		// cache might not exist anymore. For example, if two modules shared the same
-		// set of order only strings initially, deduplicateOrderOnlyDeps would create
-		// a dedup-* phony and replace the order only string with this phony for these
-		// two modules. If one of the module had its order only strings changed, and
-		// we skip the other module in the next build, the dedup-* phony would not
-		// in the phony list anymore, so we need to add it here in order to avoid
-		// writing the ninja statements for the skipped module, otherwise it would
-		// reference a dedup-* phony that no longer exists.
-		for _, dep := range orderOnlyStrings {
-			// nothing changed to this phony, the cached value is still valid
-			if _, ok := c.orderOnlyStringsToCache[dep]; ok {
-				continue
-			}
-			orderOnlyStrings, ok := c.orderOnlyStringsFromCache[dep]
-			if !ok {
-				return fmt.Errorf("no cached value found for order only dep: %s", dep)
-			}
-			phony := buildDef{
-				Rule:          Phony,
-				OutputStrings: []string{dep},
-				InputStrings:  orderOnlyStrings,
-			}
-			phonys.buildDefs = append(phonys.buildDefs, &phony)
-			c.orderOnlyStringsToCache[dep] = orderOnlyStrings
-		}
-	}
-	return nil
-}
 func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo, headerTemplate *template.Template) error {
 	bf, err := c.fs.OpenFile(JoinPath(c.SrcDir(), baseFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
 	if err != nil {
@@ -4868,16 +4816,6 @@ func (c *Context) SetBeforePrepareBuildActionsHook(hookFn func() error) {
 	c.BeforePrepareBuildActionsHook = hookFn
 }
 
-// phonyCandidate represents the state of a set of deps that decides its eligibility
-// to be extracted as a phony output
-type phonyCandidate struct {
-	sync.Once
-	phony             *buildDef // the phony buildDef that wraps the set
-	first             *buildDef // the first buildDef that uses this set
-	orderOnlyStrings  []string  // the original OrderOnlyStrings of the first buildDef that uses this set
-	usedByIncremental bool      // if the phony is used by any incremental module
-}
-
 // keyForPhonyCandidate gives a unique identifier for a set of deps.
 func keyForPhonyCandidate(stringDeps []string) uint64 {
 	hasher := fnv.New64a()
@@ -4895,41 +4833,6 @@ func keyForPhonyCandidate(stringDeps []string) uint64 {
 	return hasher.Sum64()
 }
 
-// scanBuildDef is called for every known buildDef `b` that has a non-empty `b.OrderOnly`.
-// If `b.OrderOnly` is not present in `candidates`, it gets stored.
-// But if `b.OrderOnly` already exists in `candidates`, then `b.OrderOnly`
-// (and phonyCandidate#first.OrderOnly) will be replaced with phonyCandidate#phony.Outputs
-func scanBuildDef(candidates *sync.Map, b *buildDef, incremental bool) {
-	key := keyForPhonyCandidate(b.OrderOnlyStrings)
-	if v, loaded := candidates.LoadOrStore(key, &phonyCandidate{
-		first:             b,
-		orderOnlyStrings:  b.OrderOnlyStrings,
-		usedByIncremental: incremental,
-	}); loaded {
-		m := v.(*phonyCandidate)
-		if slices.Equal(m.orderOnlyStrings, b.OrderOnlyStrings) {
-			m.Do(func() {
-				// this is the second occurrence and hence it makes sense to
-				// extract it as a phony output
-				m.phony = &buildDef{
-					Rule:          Phony,
-					OutputStrings: []string{fmt.Sprintf("dedup-%x", key)},
-					InputStrings:  m.first.OrderOnlyStrings,
-				}
-				// the previously recorded build-def, which first had these deps as its
-				// order-only deps, should now use this phony output instead
-				m.first.OrderOnlyStrings = m.phony.OutputStrings
-				m.first = nil
-			})
-			b.OrderOnlyStrings = m.phony.OutputStrings
-			// don't override the value with false if it was set to true already
-			if incremental {
-				m.usedByIncremental = incremental
-			}
-		}
-	}
-}
-
 // deduplicateOrderOnlyDeps searches for common sets of order-only dependencies across all
 // buildDef instances in the provided moduleInfo instances. Each such
 // common set forms a new buildDef representing a phony output that then becomes
@@ -4938,34 +4841,67 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 	c.BeginEvent("deduplicate_order_only_deps")
 	defer c.EndEvent("deduplicate_order_only_deps")
 
-	candidates := sync.Map{} //used as map[key]*candidate
-	parallelVisit(slices.Values(modules), unorderedVisitorImpl{}, parallelVisitLimit,
-		func(m *moduleInfo, pause chan<- pauseSpec) bool {
-			incremental := m.buildActionCacheKey != nil
-			for _, b := range m.actionDefs.buildDefs {
-				// The dedup logic doesn't handle the case where OrderOnly is not empty
-				if len(b.OrderOnly) == 0 && len(b.OrderOnlyStrings) > 0 {
-					scanBuildDef(&candidates, b, incremental)
-				}
-			}
-			return false
-		})
-
-	// now collect all created phonys to return
 	var phonys []*buildDef
-	candidates.Range(func(_ any, v any) bool {
-		candidate := v.(*phonyCandidate)
-		if candidate.phony != nil {
-			phonys = append(phonys, candidate.phony)
-			if candidate.usedByIncremental {
-				c.orderOnlyStringsToCache[candidate.phony.OutputStrings[0]] =
-					candidate.phony.InputStrings
+	c.orderOnlyStrings.Range(func(key uniquelist.UniqueList[string], info *orderOnlyStringsInfo) bool {
+		if info.dedup {
+			dedup := fmt.Sprintf("dedup-%x", keyForPhonyCandidate(key.ToSlice()))
+			phony := &buildDef{
+				Rule:          Phony,
+				OutputStrings: []string{dedup},
+				InputStrings:  key.ToSlice(),
+			}
+			info.dedupName = dedup
+			phonys = append(phonys, phony)
+			if info.incremental {
+				c.orderOnlyStringsToCache[phony.OutputStrings[0]] = phony.InputStrings
 			}
 		}
 		return true
 	})
 
+	parallelVisit(slices.Values(modules), unorderedVisitorImpl{}, parallelVisitLimit,
+		func(m *moduleInfo, pause chan<- pauseSpec) bool {
+			for _, def := range m.actionDefs.buildDefs {
+				if info, loaded := c.orderOnlyStrings.Load(def.OrderOnlyStrings); loaded {
+					if info.dedup {
+						def.OrderOnlyStrings = uniquelist.Make([]string{info.dedupName})
+						m.orderOnlyStrings = append(m.orderOnlyStrings, info.dedupName)
+					}
+				}
+			}
+			if m.buildActionCacheKey != nil {
+				c.cacheModuleBuildActions(m)
+			}
+
+			return false
+		})
+
 	return &localBuildActions{buildDefs: phonys}
+}
+
+func (c *Context) cacheModuleBuildActions(module *moduleInfo) {
+	var providers []CachedProvider
+	for i, p := range module.providers {
+		if p != nil && providerRegistry[i].mutator == "" {
+			providers = append(providers,
+				CachedProvider{
+					Id:    providerRegistry[i],
+					Value: &p,
+				})
+		}
+	}
+
+	// These show up in the ninja file, so we need to cache these to ensure we
+	// re-generate ninja file if they changed.
+	relPos := module.pos
+	relPos.Filename = module.relBlueprintsFile
+	data := BuildActionCachedData{
+		Providers:        providers,
+		Pos:              &relPos,
+		OrderOnlyStrings: module.orderOnlyStrings,
+	}
+
+	c.updateBuildActionsCache(module.buildActionCacheKey, &data)
 }
 
 func (c *Context) writeLocalBuildActions(nw *ninjaWriter,

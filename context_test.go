@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
+	"path"
 	"reflect"
 	"slices"
 	"strconv"
@@ -31,6 +32,7 @@ import (
 
 	"github.com/google/blueprint/parser"
 	"github.com/google/blueprint/proptools"
+	"github.com/google/blueprint/uniquelist"
 )
 
 type Walker interface {
@@ -74,8 +76,12 @@ var IncrementalTestProviderKey = NewProvider[IncrementalTestProvider]()
 type baseTestModule struct {
 	SimpleName
 	properties struct {
-		Deps         []string
-		Ignored_deps []string
+		Deps             []string
+		Ignored_deps     []string
+		Outputs          []string
+		Order_only       []string
+		Extra_outputs    []string
+		Extra_order_only []string
 	}
 	GenerateBuildActionsCalled bool
 }
@@ -95,11 +101,18 @@ func init() {
 }
 func (b *baseTestModule) GenerateBuildActions(ctx ModuleContext) {
 	b.GenerateBuildActionsCalled = true
-	outputFile := ctx.ModuleName() + "_phony_output"
 	ctx.Build(pctx, BuildParams{
-		Rule:    Phony,
-		Outputs: []string{outputFile},
+		Rule:      Phony,
+		Outputs:   b.properties.Outputs,
+		OrderOnly: b.properties.Order_only,
 	})
+	if len(b.properties.Extra_outputs) > 0 {
+		ctx.Build(pctx, BuildParams{
+			Rule:      Phony,
+			Outputs:   b.properties.Extra_outputs,
+			OrderOnly: b.properties.Extra_order_only,
+		})
+	}
 	SetProvider(ctx, IncrementalTestProviderKey, IncrementalTestProvider{
 		Value: ctx.ModuleName(),
 	})
@@ -119,7 +132,6 @@ func (f *fooModule) Walk() bool {
 }
 
 type barModule struct {
-	SimpleName
 	baseTestModule
 }
 
@@ -133,7 +145,6 @@ func (b *barModule) Walk() bool {
 }
 
 type incrementalModule struct {
-	SimpleName
 	baseTestModule
 	IncrementalModule
 }
@@ -1001,14 +1012,12 @@ func TestDeduplicateOrderOnlyDeps(t *testing.T) {
 		return &buildDef{
 			OutputStrings:    []string{output},
 			InputStrings:     inputs,
-			OrderOnlyStrings: orderOnlyDeps,
+			OrderOnlyStrings: uniquelist.Make(orderOnlyDeps),
 		}
 	}
-	m := func(bs ...*buildDef) *moduleInfo {
-		return &moduleInfo{actionDefs: localBuildActions{buildDefs: bs}}
-	}
+
 	type testcase struct {
-		modules        []*moduleInfo
+		bp             string
 		expectedPhonys []*buildDef
 		conversions    map[string][]string
 	}
@@ -1018,10 +1027,18 @@ func TestDeduplicateOrderOnlyDeps(t *testing.T) {
 		return strconv.FormatUint(hash.Sum64(), 16)
 	}
 	testCases := []testcase{{
-		modules: []*moduleInfo{
-			m(b("A", nil, []string{"d"})),
-			m(b("B", nil, []string{"d"})),
-		},
+		bp: `
+			foo_module {
+					name: "A",
+					outputs: ["A"],
+					order_only: ["d"],
+			}
+			foo_module {
+					name: "B",
+					outputs: ["B"],
+					order_only: ["d"],
+			}
+		`,
 		expectedPhonys: []*buildDef{
 			b("dedup-"+fnvHash("d"), []string{"d"}, nil),
 		},
@@ -1030,16 +1047,36 @@ func TestDeduplicateOrderOnlyDeps(t *testing.T) {
 			"B": []string{"dedup-" + fnvHash("d")},
 		},
 	}, {
-		modules: []*moduleInfo{
-			m(b("A", nil, []string{"a"})),
-			m(b("B", nil, []string{"b"})),
-		},
+		bp: `
+			foo_module {
+					name: "A",
+					outputs: ["A"],
+					order_only: ["a"],
+			}
+			foo_module {
+					name: "B",
+					outputs: ["B"],
+					order_only: ["b"],
+			}
+		`,
 	}, {
-		modules: []*moduleInfo{
-			m(b("A", nil, []string{"a"})),
-			m(b("B", nil, []string{"b"})),
-			m(b("C", nil, []string{"a"})),
-		},
+		bp: `
+			foo_module {
+					name: "A",
+					outputs: ["A"],
+					order_only: ["a"],
+			}
+			foo_module {
+					name: "B",
+					outputs: ["B"],
+					order_only: ["b"],
+			}
+			foo_module {
+					name: "C",
+					outputs: ["C"],
+					order_only: ["a"],
+			}
+		`,
 		expectedPhonys: []*buildDef{b("dedup-"+fnvHash("a"), []string{"a"}, nil)},
 		conversions: map[string][]string{
 			"A": []string{"dedup-" + fnvHash("a")},
@@ -1047,12 +1084,22 @@ func TestDeduplicateOrderOnlyDeps(t *testing.T) {
 			"C": []string{"dedup-" + fnvHash("a")},
 		},
 	}, {
-		modules: []*moduleInfo{
-			m(b("A", nil, []string{"a", "b"}),
-				b("B", nil, []string{"a", "b"})),
-			m(b("C", nil, []string{"a", "c"}),
-				b("D", nil, []string{"a", "c"})),
-		},
+		bp: `
+			foo_module {
+					name: "A",
+					outputs: ["A"],
+					order_only: ["a", "b"],
+					extra_outputs: ["B"],
+					extra_order_only: ["a", "b"],
+			}
+			foo_module {
+					name: "C",
+					outputs: ["C"],
+					order_only: ["a", "c"],
+					extra_outputs: ["D"],
+					extra_order_only: ["a", "c"],
+			}
+		`,
 		expectedPhonys: []*buildDef{
 			b("dedup-"+fnvHash("ab"), []string{"a", "b"}, nil),
 			b("dedup-"+fnvHash("ac"), []string{"a", "c"}, nil)},
@@ -1065,8 +1112,20 @@ func TestDeduplicateOrderOnlyDeps(t *testing.T) {
 	}}
 	for index, tc := range testCases {
 		t.Run(fmt.Sprintf("TestCase-%d", index), func(t *testing.T) {
-			ctx := NewContext()
-			actualPhonys := ctx.deduplicateOrderOnlyDeps(tc.modules)
+			ctx := bpSetup(t, tc.bp)
+			_, errs := ctx.PrepareBuildActions(nil)
+			if len(errs) > 0 {
+				t.Errorf("unexpected errors calling generateModuleBuildActions:")
+				for _, err := range errs {
+					t.Errorf("  %s", err)
+				}
+				t.FailNow()
+			}
+			modules := make([]*moduleInfo, 0, len(ctx.moduleInfo))
+			for _, module := range ctx.moduleInfo {
+				modules = append(modules, module)
+			}
+			actualPhonys := ctx.deduplicateOrderOnlyDeps(modules)
 			if len(actualPhonys.variables) != 0 {
 				t.Errorf("No variables expected but found %v", actualPhonys.variables)
 			}
@@ -1087,7 +1146,7 @@ func TestDeduplicateOrderOnlyDeps(t *testing.T) {
 				}
 			}
 			find := func(k string) *buildDef {
-				for _, m := range tc.modules {
+				for _, m := range modules {
 					for _, b := range m.actionDefs.buildDefs {
 						if reflect.DeepEqual(b.OutputStrings, []string{k}) {
 							return b
@@ -1101,7 +1160,7 @@ func TestDeduplicateOrderOnlyDeps(t *testing.T) {
 				if actual == nil {
 					t.Errorf("Couldn't find %s", k)
 				}
-				if !reflect.DeepEqual(actual.OrderOnlyStrings, conversion) {
+				if !reflect.DeepEqual(actual.OrderOnlyStrings.ToSlice(), conversion) {
 					t.Errorf("expected %s.OrderOnly = %v but got %v", k, conversion, actual.OrderOnly)
 				}
 			}
@@ -1398,23 +1457,15 @@ func TestSourceRootDirs(t *testing.T) {
 	}
 }
 
-func incrementalSetup(t *testing.T) *Context {
+func bpSetup(t *testing.T, bp string) *Context {
 	ctx := NewContext()
 	fileSystem := map[string][]byte{
-		"Android.bp": []byte(`
-			incremental_module {
-					name: "MyIncrementalModule",
-					deps: ["MyBarModule"],
-			}
-
-			bar_module {
-					name: "MyBarModule",
-			}
-		`),
+		"Android.bp": []byte(bp),
 	}
 	ctx.MockFileSystem(fileSystem)
 	ctx.RegisterBottomUpMutator("deps", depsMutator)
 	ctx.RegisterModuleType("incremental_module", newIncrementalModule)
+	ctx.RegisterModuleType("foo_module", newFooModule)
 	ctx.RegisterModuleType("bar_module", newBarModule)
 
 	_, errs := ctx.ParseBlueprintsFiles("Android.bp", nil)
@@ -1438,8 +1489,30 @@ func incrementalSetup(t *testing.T) *Context {
 	return ctx
 }
 
-func incrementalSetupForRestore(t *testing.T, orderOnlyStrings []string) (*Context, any) {
-	ctx := incrementalSetup(t)
+func incrementalSetup(t *testing.T) *Context {
+	bp := `
+			incremental_module {
+					name: "MyIncrementalModule",
+					deps: ["MyBarModule"],
+					outputs: ["MyIncrementalModule_phony_output"],
+					order_only: ["test.lib"],
+			}
+			bar_module {
+					name: "MyBarModule",
+					outputs: ["MyBarModule_phony_output"],
+					order_only: ["test.lib"],
+			}
+			foo_module {
+					name: "MyFooModule",
+					outputs: ["MyFooModule_phony_output"],
+					order_only: ["test.lib"],
+			}
+		`
+
+	return bpSetup(t, bp)
+}
+
+func incrementalSetupForRestore(ctx *Context, t *testing.T, orderOnlyStrings []string) any {
 	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
 	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
 
@@ -1478,7 +1551,7 @@ func incrementalSetupForRestore(t *testing.T, orderOnlyStrings []string) (*Conte
 	ctx.SetIncrementalAnalysis(true)
 	ctx.buildActionsFromCache = toCache
 
-	return ctx, providerValue
+	return providerValue
 }
 
 func calculateHashKey(m *moduleInfo, providerHashes [][]uint64) BuildActionCacheKey {
@@ -1511,7 +1584,11 @@ func TestCacheBuildActions(t *testing.T) {
 		}
 		t.FailNow()
 	}
-
+	modules := make([]*moduleInfo, 0, len(ctx.moduleInfo))
+	for _, module := range ctx.moduleInfo {
+		modules = append(modules, module)
+	}
+	ctx.deduplicateOrderOnlyDeps(modules)
 	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
 	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
 	if len(ctx.buildActionsToCache) != 1 {
@@ -1534,6 +1611,7 @@ func TestCacheBuildActions(t *testing.T) {
 			Id:    &IncrementalTestProviderKey.providerKey,
 			Value: &providerValue,
 		}},
+		OrderOnlyStrings: []string{"dedup-d479e9a8133ff998"},
 	}
 	if !reflect.DeepEqual(expectedCache, *cache) {
 		t.Errorf("expected: %v actual %v", expectedCache, *cache)
@@ -1541,7 +1619,8 @@ func TestCacheBuildActions(t *testing.T) {
 }
 
 func TestRestoreBuildActions(t *testing.T) {
-	ctx, providerValue := incrementalSetupForRestore(t, nil)
+	ctx := incrementalSetup(t)
+	providerValue := incrementalSetupForRestore(ctx, t, nil)
 	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
 	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
 	_, errs := ctx.PrepareBuildActions(nil)
@@ -1566,7 +1645,8 @@ func TestRestoreBuildActions(t *testing.T) {
 }
 
 func TestSkipNinjaForCacheHit(t *testing.T) {
-	ctx, _ := incrementalSetupForRestore(t, nil)
+	ctx := incrementalSetup(t)
+	incrementalSetupForRestore(ctx, t, nil)
 	_, errs := ctx.PrepareBuildActions(nil)
 	if len(errs) > 0 {
 		t.Errorf("unexpected errors calling generateModuleBuildActions:")
@@ -1591,7 +1671,8 @@ func TestSkipNinjaForCacheHit(t *testing.T) {
 		t.Errorf("ninja file doesn't have build statements for MyBarModule: %s", string(content))
 	}
 
-	file, err = ctx.fs.Open("test_incremental_ninja/.-MyIncrementalModule-none-incremental_module.ninja")
+	file, err = ctx.fs.Open(path.Join("test_incremental_ninja",
+		calculateFileNameHash(".-MyIncrementalModule-none-incremental_module")+".ninja"))
 	if !os.IsNotExist(err) {
 		t.Errorf("shouldn't generate ninja file for MyIncrementalModule: %s", err.Error())
 	}
@@ -1625,7 +1706,8 @@ func TestNotSkipNinjaForCacheMiss(t *testing.T) {
 		t.Errorf("ninja file doesn't have build statements for MyBarModule: %s", string(content))
 	}
 
-	file, err = ctx.fs.Open("test_incremental_ninja/.-MyIncrementalModule-none-incremental_module.ninja")
+	file, err = ctx.fs.Open(path.Join("test_incremental_ninja",
+		calculateFileNameHash(".-MyIncrementalModule-none-incremental_module")+".ninja"))
 	if err != nil {
 		t.Errorf("no ninja file for MyIncrementalModule")
 	}
@@ -1636,6 +1718,7 @@ func TestNotSkipNinjaForCacheMiss(t *testing.T) {
 }
 
 func TestOrderOnlyStringsCaching(t *testing.T) {
+	phony := "dedup-d479e9a8133ff998"
 	ctx := incrementalSetup(t)
 	ctx.SetIncrementalEnabled(true)
 	_, errs := ctx.PrepareBuildActions(nil)
@@ -1648,24 +1731,25 @@ func TestOrderOnlyStringsCaching(t *testing.T) {
 	}
 	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
 	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
-	bDef := buildDef{
-		Rule:             Phony,
-		OrderOnlyStrings: []string{"test.lib"},
-	}
-	incInfo.actionDefs.buildDefs = append(incInfo.actionDefs.buildDefs, &bDef)
-	barInfo.actionDefs.buildDefs = append(barInfo.actionDefs.buildDefs, &bDef)
 
 	buf := bytes.NewBuffer(nil)
 	w := newNinjaWriter(buf)
 	ctx.writeAllModuleActions(w, true, "test.ninja")
 
 	verifyOrderOnlyStringsCache(t, ctx, incInfo, barInfo)
+
+	// Verify dedup-d479e9a8133ff998 is written to the common ninja file.
+	expected := strings.Join([]string{"build", phony + ":", "phony", "test.lib"}, " ")
+	if strings.Count(buf.String(), expected) != 1 {
+		t.Errorf("only one phony target should be found: %s", buf.String())
+	}
 }
 
 func TestOrderOnlyStringsRestoring(t *testing.T) {
 	phony := "dedup-d479e9a8133ff998"
 	orderOnlyStrings := []string{phony}
-	ctx, _ := incrementalSetupForRestore(t, orderOnlyStrings)
+	ctx := incrementalSetup(t)
+	incrementalSetupForRestore(ctx, t, orderOnlyStrings)
 	ctx.orderOnlyStringsFromCache = make(OrderOnlyStringsCache)
 	ctx.orderOnlyStringsFromCache[phony] = []string{"test.lib"}
 	_, errs := ctx.PrepareBuildActions(nil)
@@ -1677,19 +1761,118 @@ func TestOrderOnlyStringsRestoring(t *testing.T) {
 		t.FailNow()
 	}
 
+	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
+
 	buf := bytes.NewBuffer(nil)
 	w := newNinjaWriter(buf)
 	ctx.writeAllModuleActions(w, true, "test.ninja")
 
 	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
+	verifyOrderOnlyStringsCache(t, ctx, incInfo, barInfo)
+
+	verifyBuildDefsShouldContain(t, barInfo, phony)
+	// Verify dedup-d479e9a8133ff998 is written to the common ninja file.
+	expected := strings.Join([]string{"build", phony + ":", "phony", "test.lib"}, " ")
+	if strings.Count(buf.String(), expected) != 1 {
+		t.Errorf("only one phony target should be found: %s", buf.String())
+	}
+}
+
+func TestOrderOnlyStringsValidWhenOnlyRestoredModuleUseIt(t *testing.T) {
+	phony := "dedup-d479e9a8133ff998"
+	orderOnlyStrings := []string{phony}
+	bp := `
+			incremental_module {
+					name: "MyIncrementalModule",
+					deps: ["MyBarModule"],
+					outputs: ["MyIncrementalModule_phony_output"],
+					order_only: ["test.lib"],
+			}
+			bar_module {
+					name: "MyBarModule",
+					outputs: ["MyBarModule_phony_output"],
+			}
+		`
+
+	ctx := bpSetup(t, bp)
+	incrementalSetupForRestore(ctx, t, orderOnlyStrings)
+	ctx.orderOnlyStringsFromCache = make(OrderOnlyStringsCache)
+	ctx.orderOnlyStringsFromCache[phony] = []string{"test.lib"}
+	_, errs := ctx.PrepareBuildActions(nil)
+	if len(errs) > 0 {
+		t.Errorf("unexpected errors calling generateModuleBuildActions:")
+		for _, err := range errs {
+			t.Errorf("  %s", err)
+		}
+		t.FailNow()
+	}
+
 	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
+
+	buf := bytes.NewBuffer(nil)
+	w := newNinjaWriter(buf)
+	ctx.writeAllModuleActions(w, true, "test.ninja")
+
+	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
 	verifyOrderOnlyStringsCache(t, ctx, incInfo, barInfo)
 
 	// Verify dedup-d479e9a8133ff998 is still written to the common ninja file even
 	// though MyBarModule no longer uses it.
 	expected := strings.Join([]string{"build", phony + ":", "phony", "test.lib"}, " ")
-	if !strings.Contains(buf.String(), expected) {
-		t.Errorf("phony target not found: %s", buf.String())
+	if strings.Count(buf.String(), expected) != 1 {
+		t.Errorf("only one phony target should be found: %s", buf.String())
+	}
+}
+
+// This tests the scenario where one restored module and two non-restored modules
+// share the same set of order only strings. The two non-restored modules will
+// contribute a dedup phony target in this case, and the restored module shouldn't
+// add a duplicate one.
+func TestSharedOrderOnlyStringsRestoringNoDuplicates(t *testing.T) {
+	phony := "dedup-d479e9a8133ff998"
+	orderOnlyStrings := []string{phony}
+	ctx := incrementalSetup(t)
+	incrementalSetupForRestore(ctx, t, orderOnlyStrings)
+	ctx.orderOnlyStringsFromCache = make(OrderOnlyStringsCache)
+	ctx.orderOnlyStringsFromCache[phony] = []string{"test.lib"}
+
+	_, errs := ctx.PrepareBuildActions(nil)
+	if len(errs) > 0 {
+		t.Errorf("unexpected errors calling generateModuleBuildActions:")
+		for _, err := range errs {
+			t.Errorf("  %s", err)
+		}
+		t.FailNow()
+	}
+	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
+	fooInfo := ctx.moduleGroupFromName("MyFooModule", nil).modules.firstModule()
+	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
+
+	buf := bytes.NewBuffer(nil)
+	w := newNinjaWriter(buf)
+	ctx.writeAllModuleActions(w, true, "test.ninja")
+
+	verifyOrderOnlyStringsCache(t, ctx, incInfo, barInfo)
+	verifyBuildDefsShouldContain(t, fooInfo, phony)
+	verifyBuildDefsShouldContain(t, barInfo, phony)
+
+	// Verify dedup-d479e9a8133ff998 is written to the common ninja file.
+	expected := strings.Join([]string{"build", phony + ":", "phony", "test.lib"}, " ")
+	if strings.Count(buf.String(), expected) != 1 {
+		t.Errorf("only one phony target should be found: %s", buf.String())
+	}
+}
+
+func verifyBuildDefsShouldContain(t *testing.T, module *moduleInfo, expected string) {
+	found := false
+	for _, def := range module.actionDefs.buildDefs {
+		found = listContainsValue(def.OrderOnlyStrings.ToSlice(), expected)
+		if found {
+			break
+		}
+	}
+	if !found {
+		t.Errorf("%s should have dedup phony target: %v", module.Name(), module.actionDefs.buildDefs)
 	}
 }
 

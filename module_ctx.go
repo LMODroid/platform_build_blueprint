@@ -26,6 +26,7 @@ import (
 	"github.com/google/blueprint/parser"
 	"github.com/google/blueprint/pathtools"
 	"github.com/google/blueprint/proptools"
+	"github.com/google/blueprint/uniquelist"
 )
 
 // A Module handles generating all of the Ninja build actions needed to build a
@@ -695,31 +696,7 @@ func (m *baseModuleContext) SetProvider(provider AnyProviderKey, value interface
 	m.context.setProvider(m.module, provider.provider(), value)
 }
 
-func (m *moduleContext) cacheModuleBuildActions(key *BuildActionCacheKey) {
-	var providers []CachedProvider
-	for i, p := range m.module.providers {
-		if p != nil && providerRegistry[i].mutator == "" {
-			providers = append(providers,
-				CachedProvider{
-					Id:    providerRegistry[i],
-					Value: &p,
-				})
-		}
-	}
-
-	// These show up in the ninja file, so we need to cache these to ensure we
-	// re-generate ninja file if they changed.
-	relPos := m.module.pos
-	relPos.Filename = m.module.relBlueprintsFile
-	data := BuildActionCachedData{
-		Providers: providers,
-		Pos:       &relPos,
-	}
-
-	m.context.updateBuildActionsCache(key, &data)
-}
-
-func (m *moduleContext) restoreModuleBuildActions() (bool, *BuildActionCacheKey) {
+func (m *moduleContext) restoreModuleBuildActions() bool {
 	// Whether the incremental flag is set and the module type supports
 	// incremental, this will decide weather to cache the data for the module.
 	incrementalEnabled := false
@@ -769,10 +746,37 @@ func (m *moduleContext) restoreModuleBuildActions() (bool, *BuildActionCacheKey)
 			m.module.incrementalRestored = true
 			m.module.orderOnlyStrings = data.OrderOnlyStrings
 			restored = true
+			for _, str := range data.OrderOnlyStrings {
+				if !strings.HasPrefix(str, "dedup-") {
+					continue
+				}
+				orderOnlyStrings, ok := m.context.orderOnlyStringsFromCache[str]
+				if !ok {
+					panic(fmt.Errorf("no cached value found for order only dep: %s", str))
+				}
+				key := uniquelist.Make(orderOnlyStrings)
+				if info, loaded := m.context.orderOnlyStrings.LoadOrStore(key, &orderOnlyStringsInfo{
+					dedup:       true,
+					incremental: true,
+				}); loaded {
+					for {
+						cpy := *info
+						cpy.dedup = true
+						cpy.incremental = true
+						if m.context.orderOnlyStrings.CompareAndSwap(key, info, &cpy) {
+							break
+						}
+						if info, loaded = m.context.orderOnlyStrings.Load(key); !loaded {
+							// This shouldn't happen
+							panic("order only string was removed unexpectedly")
+						}
+					}
+				}
+			}
 		}
 	}
 
-	return restored, cacheKey
+	return restored
 }
 
 func (m *baseModuleContext) GetDirectDepWithTag(name string, tag DependencyTag) Module {
@@ -1006,6 +1010,25 @@ func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 	}
 
 	m.actionDefs.buildDefs = append(m.actionDefs.buildDefs, def)
+	if def.OrderOnlyStrings.Len() > 0 {
+		if info, loaded := m.context.orderOnlyStrings.LoadOrStore(def.OrderOnlyStrings, &orderOnlyStringsInfo{
+			dedup:       false,
+			incremental: m.module.buildActionCacheKey != nil,
+		}); loaded {
+			for {
+				cpy := *info
+				cpy.dedup = true
+				cpy.incremental = cpy.incremental || m.module.buildActionCacheKey != nil
+				if m.context.orderOnlyStrings.CompareAndSwap(def.OrderOnlyStrings, info, &cpy) {
+					break
+				}
+				if info, loaded = m.context.orderOnlyStrings.Load(def.OrderOnlyStrings); !loaded {
+					// This shouldn't happen
+					panic("order only string was removed unexpectedly")
+				}
+			}
+		}
+	}
 }
 
 func (m *moduleContext) GetMissingDependencies() []string {

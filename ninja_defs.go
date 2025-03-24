@@ -20,6 +20,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/google/blueprint/uniquelist"
 )
 
 // A Deps value indicates the dependency file format that Ninja should expect to
@@ -262,7 +264,7 @@ type buildDef struct {
 	Implicits             []*ninjaString
 	ImplicitStrings       []string
 	OrderOnly             []*ninjaString
-	OrderOnlyStrings      []string
+	OrderOnlyStrings      uniquelist.UniqueList[string]
 	Validations           []*ninjaString
 	ValidationStrings     []string
 	Args                  map[Variable]*ninjaString
@@ -334,10 +336,13 @@ func parseBuildParams(scope scope, params *BuildParams,
 		return nil, fmt.Errorf("error parsing Implicits param: %s", err)
 	}
 
-	b.OrderOnly, b.OrderOnlyStrings, err = parseNinjaOrSimpleStrings(scope, params.OrderOnly)
+	var orderOnlyStrings []string
+	b.OrderOnly, orderOnlyStrings, err = parseNinjaOrSimpleStrings(scope, params.OrderOnly)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing OrderOnly param: %s", err)
 	}
+
+	b.OrderOnlyStrings = uniquelist.Make(orderOnlyStrings)
 
 	b.Validations, b.ValidationStrings, err = parseNinjaOrSimpleStrings(scope, params.Validations)
 	if err != nil {
@@ -427,7 +432,7 @@ func (b *buildDef) WriteTo(nw *ninjaWriter, nameTracker *nameTracker) error {
 
 	err := nw.Build(comment, rule, outputs, implicitOuts, explicitDeps, implicitDeps, orderOnlyDeps, validations,
 		outputStrings, implicitOutStrings, explicitDepStrings,
-		implicitDepStrings, orderOnlyDepStrings, validationStrings,
+		implicitDepStrings, orderOnlyDepStrings.ToSlice(), validationStrings,
 		nameTracker)
 	if err != nil {
 		return err

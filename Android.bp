@@ -41,6 +41,8 @@ bootstrap_go_package {
         "blueprint-pathtools",
         "blueprint-pool",
         "blueprint-proptools",
+        "blueprint-syncmap",
+        "blueprint-uniquelist",
     ],
     pkgPath: "github.com/google/blueprint",
     srcs: [
