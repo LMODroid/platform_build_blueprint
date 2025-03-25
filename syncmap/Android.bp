@@ -1,0 +1,9 @@
+bootstrap_go_package {
+    name: "blueprint-syncmap",
+    pkgPath: "github.com/google/blueprint/syncmap",
+    srcs: ["syncmap.go"],
+    visibility: [
+        "//build/blueprint:__subpackages__",
+        "//build/soong:__subpackages__",
+    ],
+}

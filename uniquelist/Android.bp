@@ -8,6 +8,7 @@ bootstrap_go_package {
         "uniquelist_test.go",
     ],
     visibility: [
+        "//build/blueprint",
         "//build/blueprint/depset",
     ],
 }
